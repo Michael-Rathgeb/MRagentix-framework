@@ -14,6 +14,7 @@ const TOOL_NAMES: Record<string, string> = {
   grep: "Search",
   find: "Find",
   ls: "List",
+  subagent: "Agent",
 };
 
 function formatActiveToolLabel(name: string, args: Record<string, unknown>): string {
@@ -38,6 +39,12 @@ function formatActiveToolLabel(name: string, args: Record<string, unknown>): str
       return `${display}(${String(args.pattern ?? "")})`;
     case "ls":
       return `${display}(${String(args.path ?? ".")})`;
+    case "subagent": {
+      const task = String(args.task ?? "");
+      const trunc = task.length > 50 ? task.slice(0, 47) + "…" : task;
+      const agentName = args.agent ? `${args.agent}: ` : "";
+      return `${display}(${agentName}${trunc})`;
+    }
     default:
       return display;
   }
@@ -87,18 +94,22 @@ export function StreamingArea({
         </Box>
       )}
 
-      {activeToolCalls.length > 0 && (
-        <Box flexDirection="column" marginTop={1}>
-          {activeToolCalls.map((tc) => {
-            const displayName = formatActiveToolLabel(tc.name, tc.args);
-            return (
-              <Box key={tc.toolCallId}>
-                <Spinner label={displayName} />
-              </Box>
-            );
-          })}
-        </Box>
-      )}
+      {(() => {
+        const otherCalls = activeToolCalls.filter((tc) => tc.name !== "subagent");
+        if (otherCalls.length === 0) return null;
+        return (
+          <Box flexDirection="column" marginTop={1}>
+            {otherCalls.map((tc) => {
+              const label = formatActiveToolLabel(tc.name, tc.args);
+              return (
+                <Box key={tc.toolCallId}>
+                  <Spinner label={label} />
+                </Box>
+              );
+            })}
+          </Box>
+        );
+      })()}
     </Box>
   );
 }

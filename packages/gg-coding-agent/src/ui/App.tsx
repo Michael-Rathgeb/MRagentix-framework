@@ -6,6 +6,8 @@ import { useAgentLoop } from "./hooks/useAgentLoop.js";
 import { UserMessage } from "./components/UserMessage.js";
 import { AssistantMessage } from "./components/AssistantMessage.js";
 import { ToolExecution } from "./components/ToolExecution.js";
+import { SubAgentPanel, type SubAgentInfo } from "./components/SubAgentPanel.js";
+import type { SubAgentUpdate, SubAgentDetails } from "../tools/subagent.js";
 import { StreamingArea } from "./components/StreamingArea.js";
 import { InputArea } from "./components/InputArea.js";
 import { Footer } from "./components/Footer.js";
@@ -72,6 +74,13 @@ interface BannerItem {
   id: string;
 }
 
+interface SubAgentGroupItem {
+  kind: "subagent_group";
+  agents: SubAgentInfo[];
+  aborted?: boolean;
+  id: string;
+}
+
 type CompletedItem =
   | UserItem
   | AssistantItem
@@ -80,7 +89,8 @@ type CompletedItem =
   | ErrorItem
   | InfoItem
   | DurationItem
-  | BannerItem;
+  | BannerItem
+  | SubAgentGroupItem;
 
 // ── Duration summary ─────────────────────────────────────
 
@@ -96,6 +106,7 @@ function pickDurationVerb(toolsUsed: string[]): string {
   const has = (name: string) => toolsUsed.includes(name);
 
   // Tool-specific phrases (most specific first)
+  if (has("subagent")) return "Delegated work for";
   if (has("edit") && has("write")) return "Crafted code for";
   if (has("edit")) return "Refactored for";
   if (has("write")) return "Wrote code for";
@@ -190,13 +201,60 @@ export function App(props: AppProps) {
       }, []),
       onToolStart: useCallback(
         (toolCallId: string, name: string, args: Record<string, unknown>) => {
-          setLiveItems((prev) => [
-            ...prev,
-            { kind: "tool_start", toolCallId, name, args, id: getId() },
-          ]);
+          if (name === "subagent") {
+            // Create or update the sub-agent group item
+            const newAgent: SubAgentInfo = {
+              toolCallId,
+              task: String(args.task ?? ""),
+              agentName: String(args.agent ?? "default"),
+              status: "running",
+              toolUseCount: 0,
+              tokenUsage: { input: 0, output: 0 },
+            };
+            setLiveItems((prev) => {
+              const groupIdx = prev.findIndex((item) => item.kind === "subagent_group");
+              if (groupIdx !== -1) {
+                const group = prev[groupIdx] as SubAgentGroupItem;
+                const next = [...prev];
+                next[groupIdx] = {
+                  ...group,
+                  agents: [...group.agents, newAgent],
+                };
+                return next;
+              }
+              return [...prev, { kind: "subagent_group", agents: [newAgent], id: getId() }];
+            });
+          } else {
+            setLiveItems((prev) => [
+              ...prev,
+              { kind: "tool_start", toolCallId, name, args, id: getId() },
+            ]);
+          }
         },
         [],
       ),
+      onToolUpdate: useCallback((toolCallId: string, update: unknown) => {
+        setLiveItems((prev) => {
+          const groupIdx = prev.findIndex((item) => item.kind === "subagent_group");
+          if (groupIdx === -1) return prev;
+          const group = prev[groupIdx] as SubAgentGroupItem;
+          const agentIdx = group.agents.findIndex((a) => a.toolCallId === toolCallId);
+          if (agentIdx === -1) return prev;
+
+          const saUpdate = update as SubAgentUpdate;
+          const updatedAgents = [...group.agents];
+          updatedAgents[agentIdx] = {
+            ...updatedAgents[agentIdx],
+            toolUseCount: saUpdate.toolUseCount,
+            tokenUsage: { ...saUpdate.tokenUsage },
+            currentActivity: saUpdate.currentActivity,
+          };
+
+          const next = [...prev];
+          next[groupIdx] = { ...group, agents: updatedAgents };
+          return next;
+        });
+      }, []),
       onToolEnd: useCallback(
         (
           toolCallId: string,
@@ -204,33 +262,59 @@ export function App(props: AppProps) {
           result: string,
           isError: boolean,
           durationMs: number,
+          details?: unknown,
         ) => {
-          setLiveItems((prev) => {
-            // Find the matching tool_start and replace it with tool_done
-            const startIdx = prev.findIndex(
-              (item) => item.kind === "tool_start" && item.toolCallId === toolCallId,
-            );
-            if (startIdx !== -1) {
-              const startItem = prev[startIdx] as ToolStartItem;
-              const doneItem: ToolDoneItem = {
-                kind: "tool_done",
-                name,
-                args: startItem.args,
+          if (name === "subagent") {
+            setLiveItems((prev) => {
+              const groupIdx = prev.findIndex((item) => item.kind === "subagent_group");
+              if (groupIdx === -1) return prev;
+              const group = prev[groupIdx] as SubAgentGroupItem;
+              const agentIdx = group.agents.findIndex((a) => a.toolCallId === toolCallId);
+              if (agentIdx === -1) return prev;
+
+              const saDetails = details as SubAgentDetails | undefined;
+              const updatedAgents = [...group.agents];
+              updatedAgents[agentIdx] = {
+                ...updatedAgents[agentIdx],
+                status: isError ? "error" : "done",
                 result,
-                isError,
-                durationMs,
-                id: startItem.id,
+                durationMs: saDetails?.durationMs ?? durationMs,
+                toolUseCount: saDetails?.toolUseCount ?? updatedAgents[agentIdx].toolUseCount,
+                tokenUsage: saDetails?.tokenUsage ?? updatedAgents[agentIdx].tokenUsage,
               };
+
               const next = [...prev];
-              next[startIdx] = doneItem;
+              next[groupIdx] = { ...group, agents: updatedAgents };
               return next;
-            }
-            // Fallback: just append
-            return [
-              ...prev,
-              { kind: "tool_done", name, args: {}, result, isError, durationMs, id: getId() },
-            ];
-          });
+            });
+          } else {
+            setLiveItems((prev) => {
+              // Find the matching tool_start and replace it with tool_done
+              const startIdx = prev.findIndex(
+                (item) => item.kind === "tool_start" && item.toolCallId === toolCallId,
+              );
+              if (startIdx !== -1) {
+                const startItem = prev[startIdx] as ToolStartItem;
+                const doneItem: ToolDoneItem = {
+                  kind: "tool_done",
+                  name,
+                  args: startItem.args,
+                  result,
+                  isError,
+                  durationMs,
+                  id: startItem.id,
+                };
+                const next = [...prev];
+                next[startIdx] = doneItem;
+                return next;
+              }
+              // Fallback: just append
+              return [
+                ...prev,
+                { kind: "tool_done", name, args: {}, result, isError, durationMs, id: getId() },
+              ];
+            });
+          }
         },
         [],
       ),
@@ -238,10 +322,12 @@ export function App(props: AppProps) {
         setLiveItems((prev) => [...prev, { kind: "duration", durationMs, toolsUsed, id: getId() }]);
       }, []),
       onAborted: useCallback(() => {
-        setLiveItems((prev) => [
-          ...prev,
-          { kind: "info", text: "Request was stopped.", id: getId() },
-        ]);
+        setLiveItems((prev) => {
+          const next = prev.map((item) =>
+            item.kind === "subagent_group" ? { ...item, aborted: true } : item,
+          );
+          return [...next, { kind: "info", text: "Request was stopped.", id: getId() }];
+        });
       }, []),
     },
   );
@@ -390,6 +476,8 @@ export function App(props: AppProps) {
             </Text>
           </Box>
         );
+      case "subagent_group":
+        return <SubAgentPanel key={item.id} agents={item.agents} aborted={item.aborted} />;
     }
   };
 
