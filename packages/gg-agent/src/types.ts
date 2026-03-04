@@ -1,18 +1,38 @@
 import type { z } from "zod";
-import type { Tool, AssistantMessage, StopReason, Usage, StreamOptions } from "@kenkaiiii/gg-ai";
+import type {
+  Tool,
+  AssistantMessage,
+  Message,
+  StopReason,
+  Usage,
+  StreamOptions,
+} from "@kenkaiiii/gg-ai";
+
+// ── Tool Results ────────────────────────────────────────────
+
+export interface StructuredToolResult {
+  content: string;
+  details?: unknown;
+}
+
+export type ToolExecuteResult = string | StructuredToolResult;
 
 // ── Tool Context ────────────────────────────────────────────
 
 export interface ToolContext {
   signal: AbortSignal;
   toolCallId: string;
+  onUpdate?: (update: unknown) => void;
 }
 
 // ── Agent Tool ──────────────────────────────────────────────
 
 export interface AgentTool<T extends z.ZodType = z.ZodType> extends Tool {
   parameters: T;
-  execute: (args: z.infer<T>, context: ToolContext) => string | Promise<string>;
+  execute: (
+    args: z.infer<T>,
+    context: ToolContext,
+  ) => ToolExecuteResult | Promise<ToolExecuteResult>;
 }
 
 // ── Agent Events ────────────────────────────────────────────
@@ -34,10 +54,17 @@ export interface AgentToolCallStartEvent {
   args: Record<string, unknown>;
 }
 
+export interface AgentToolCallUpdateEvent {
+  type: "tool_call_update";
+  toolCallId: string;
+  update: unknown;
+}
+
 export interface AgentToolCallEndEvent {
   type: "tool_call_end";
   toolCallId: string;
   result: string;
+  details?: unknown;
   isError: boolean;
   durationMs: number;
 }
@@ -64,6 +91,7 @@ export type AgentEvent =
   | AgentTextDeltaEvent
   | AgentThinkingDeltaEvent
   | AgentToolCallStartEvent
+  | AgentToolCallUpdateEvent
   | AgentToolCallEndEvent
   | AgentTurnEndEvent
   | AgentDoneEvent
@@ -84,6 +112,12 @@ export interface AgentOptions {
   baseUrl?: string;
   signal?: AbortSignal;
   accountId?: string;
+  /**
+   * Called before each LLM call. Allows the caller to inspect and transform
+   * the messages array (e.g. compaction, truncation). Return the same array
+   * for no-op, or a new array to replace the conversation context.
+   */
+  transformContext?: (messages: Message[]) => Message[] | Promise<Message[]>;
 }
 
 // ── Agent Result ────────────────────────────────────────────

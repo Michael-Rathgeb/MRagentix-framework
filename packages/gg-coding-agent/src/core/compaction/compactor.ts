@@ -1,5 +1,5 @@
 import { stream, type Message, type Provider } from "@kenkaiiii/gg-ai";
-import { estimateConversationTokens } from "./token-estimator.js";
+import { estimateConversationTokens, estimateMessageTokens } from "./token-estimator.js";
 
 export interface CompactionResult {
   originalCount: number;
@@ -18,6 +18,41 @@ export function shouldCompact(
 ): boolean {
   const estimated = estimateConversationTokens(messages);
   return estimated > contextWindow * threshold;
+}
+
+/**
+ * Find the index where recent messages should start, given a token budget.
+ * Walks backward from the end, accumulating token estimates, and returns the
+ * first index that fits within the budget. Never cuts at index 0 (system message).
+ * Avoids splitting tool_call / tool_result pairs.
+ */
+export function findRecentCutPoint(messages: Message[], tokenBudget: number): number {
+  if (messages.length <= 1) return messages.length;
+
+  let accumulated = 0;
+  let cutIndex = messages.length;
+
+  // Walk backwards from the last message
+  for (let i = messages.length - 1; i >= 1; i--) {
+    const tokens = estimateMessageTokens(messages[i]);
+    if (accumulated + tokens > tokenBudget) {
+      break;
+    }
+    accumulated += tokens;
+    cutIndex = i;
+  }
+
+  // Don't split tool_call and tool_result pairs:
+  // If cut lands on a tool result message, back up to include the preceding assistant
+  if (cutIndex < messages.length && messages[cutIndex].role === "tool") {
+    // Back up to find the assistant message with the tool_call
+    if (cutIndex > 1) {
+      cutIndex--;
+    }
+  }
+
+  // Never cut before index 1 (preserve system message at 0)
+  return Math.max(1, cutIndex);
 }
 
 /**

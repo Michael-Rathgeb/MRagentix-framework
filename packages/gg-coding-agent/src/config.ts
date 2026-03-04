@@ -12,6 +12,7 @@ export interface AppPaths {
   authFile: string;
   skillsDir: string;
   extensionsDir: string;
+  agentsDir: string;
 }
 
 export function getAppPaths(): AppPaths {
@@ -23,6 +24,7 @@ export function getAppPaths(): AppPaths {
     authFile: path.join(agentDir, "auth.json"),
     skillsDir: path.join(agentDir, "skills"),
     extensionsDir: path.join(agentDir, "extensions"),
+    agentsDir: path.join(agentDir, "agents"),
   };
 }
 

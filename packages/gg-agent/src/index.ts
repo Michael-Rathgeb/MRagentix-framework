@@ -1,14 +1,17 @@
 // Core
 export { Agent, AgentStream } from "./agent.js";
-export { agentLoop } from "./agent-loop.js";
+export { agentLoop, isContextOverflow } from "./agent-loop.js";
 
 // Types
 export type {
+  StructuredToolResult,
+  ToolExecuteResult,
   ToolContext,
   AgentTool,
   AgentTextDeltaEvent,
   AgentThinkingDeltaEvent,
   AgentToolCallStartEvent,
+  AgentToolCallUpdateEvent,
   AgentToolCallEndEvent,
   AgentTurnEndEvent,
   AgentDoneEvent,

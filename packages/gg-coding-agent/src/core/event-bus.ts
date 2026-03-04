@@ -7,6 +7,7 @@ export interface BusEventMap {
   text_delta: { text: string };
   thinking_delta: { text: string };
   tool_call_start: { toolCallId: string; name: string; args: Record<string, unknown> };
+  tool_call_update: { toolCallId: string; update: unknown };
   tool_call_end: { toolCallId: string; result: string; isError: boolean; durationMs: number };
   turn_end: {
     turn: number;
@@ -77,6 +78,12 @@ export class EventBus {
           toolCallId: event.toolCallId,
           name: event.name,
           args: event.args,
+        });
+        break;
+      case "tool_call_update":
+        this.emit("tool_call_update", {
+          toolCallId: event.toolCallId,
+          update: event.update,
         });
         break;
       case "tool_call_end":

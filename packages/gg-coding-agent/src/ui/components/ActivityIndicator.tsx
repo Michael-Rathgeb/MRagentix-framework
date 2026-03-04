@@ -1,0 +1,313 @@
+import React, { useState, useEffect, useMemo } from "react";
+import { Text, Box } from "ink";
+import { useTheme } from "../theme/theme.js";
+import type { ActivityPhase } from "../hooks/useAgentLoop.js";
+
+// ── Spinner frames ────────────────────────────────────────
+
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const SPINNER_INTERVAL = 80;
+
+// ── Color pulse cycle ─────────────────────────────────────
+
+const PULSE_COLORS = [
+  "#60a5fa", // blue
+  "#818cf8", // indigo
+  "#a78bfa", // violet
+  "#818cf8", // indigo (back)
+  "#60a5fa", // blue (back)
+  "#38bdf8", // sky
+  "#60a5fa", // blue (back)
+];
+const PULSE_INTERVAL = 400;
+
+// ── Ellipsis animation ────────────────────────────────────
+
+const ELLIPSIS_FRAMES = ["", ".", "..", "..."];
+const ELLIPSIS_INTERVAL = 500;
+
+// ── Phrase rotation ───────────────────────────────────────
+
+const WAITING_PHRASE_INTERVAL = 3000;
+const OTHER_PHRASE_INTERVAL = 4000;
+
+const CONTEXTUAL_PHRASES = [
+  {
+    keywords: /\b(bug|fix|error|issue|broken|crash|fail|wrong)\b/i,
+    phrases: [
+      "Investigating",
+      "Diagnosing",
+      "Tracing the issue",
+      "Hunting the bug",
+      "Analyzing the problem",
+      "Narrowing it down",
+    ],
+  },
+  {
+    keywords: /\b(refactor|clean|improve|optimize|simplify|restructure)\b/i,
+    phrases: [
+      "Studying the code",
+      "Planning improvements",
+      "Mapping dependencies",
+      "Finding patterns",
+      "Designing the approach",
+    ],
+  },
+  {
+    keywords: /\b(test|spec|coverage|assert|expect|describe|it\()\b/i,
+    phrases: [
+      "Designing tests",
+      "Thinking about edge cases",
+      "Planning test coverage",
+      "Considering scenarios",
+    ],
+  },
+  {
+    keywords: /\b(build|deploy|ci|cd|pipeline|docker|config)\b/i,
+    phrases: [
+      "Checking the config",
+      "Analyzing the pipeline",
+      "Working through setup",
+      "Reviewing the build",
+    ],
+  },
+  {
+    keywords: /\b(style|css|ui|layout|design|color|theme|display|render)\b/i,
+    phrases: [
+      "Visualizing the layout",
+      "Crafting the design",
+      "Considering the aesthetics",
+      "Sketching it out",
+      "Polishing the pixels",
+    ],
+  },
+  {
+    keywords: /\b(add|create|new|implement|feature|make|build)\b/i,
+    phrases: [
+      "Architecting",
+      "Drafting the approach",
+      "Planning the implementation",
+      "Mapping it out",
+      "Designing the solution",
+    ],
+  },
+  {
+    keywords: /\b(explain|how|why|what|understand|describe)\b/i,
+    phrases: [
+      "Reading through the code",
+      "Connecting the dots",
+      "Building understanding",
+      "Tracing the logic",
+      "Piecing it together",
+    ],
+  },
+];
+
+const GENERAL_PHRASES = [
+  "Thinking",
+  "Reasoning",
+  "Processing",
+  "Mulling it over",
+  "Working on it",
+  "Contemplating",
+  "Figuring it out",
+  "Crunching",
+  "Assembling thoughts",
+  "Cooking up a plan",
+  "Brewing ideas",
+  "Spinning up neurons",
+  "Loading wisdom",
+  "Parsing the universe",
+  "Channeling clarity",
+];
+
+const THINKING_PHRASES = [
+  "Deep in thought",
+  "Reasoning",
+  "Contemplating",
+  "Pondering",
+  "Reflecting",
+  "Working through it",
+  "Analyzing",
+  "Deliberating",
+];
+
+const GENERATING_PHRASES = [
+  "Writing",
+  "Composing",
+  "Generating",
+  "Crafting a response",
+  "Drafting",
+  "Putting it together",
+  "Formulating",
+];
+
+const TOOLS_PHRASES = [
+  "Running tools",
+  "Executing",
+  "Working",
+  "Processing",
+  "Operating",
+  "Carrying out tasks",
+];
+
+function selectPhrases(phase: ActivityPhase, userMessage: string): string[] {
+  switch (phase) {
+    case "thinking":
+      return THINKING_PHRASES;
+    case "generating":
+      return GENERATING_PHRASES;
+    case "tools":
+      return TOOLS_PHRASES;
+    default: {
+      // waiting / idle — use contextual phrases based on user message
+      for (const set of CONTEXTUAL_PHRASES) {
+        if (set.keywords.test(userMessage)) {
+          return [...set.phrases, ...GENERAL_PHRASES.slice(0, 3)];
+        }
+      }
+      return GENERAL_PHRASES;
+    }
+  }
+}
+
+function shuffleArray<T>(arr: T[]): T[] {
+  const shuffled = [...arr];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled;
+}
+
+// ── Formatting helpers ────────────────────────────────────
+
+function formatElapsed(ms: number): string {
+  const totalSec = Math.round(ms / 1000);
+  if (totalSec < 60) return `${totalSec}s`;
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  return sec > 0 ? `${min}m ${sec}s` : `${min}m`;
+}
+
+function formatTokenCount(n: number): string {
+  if (n >= 1000) {
+    const k = n / 1000;
+    return k % 1 === 0 ? `${k}k` : `${k.toFixed(1)}k`;
+  }
+  return String(n);
+}
+
+function buildMetaSuffix(
+  elapsedMs: number,
+  thinkingMs: number,
+  isThinking: boolean,
+  tokenEstimate: number,
+): string {
+  const parts: string[] = [];
+  parts.push(formatElapsed(elapsedMs));
+
+  if (tokenEstimate > 0) parts.push(`↓ ${formatTokenCount(tokenEstimate)} tokens`);
+
+  if (isThinking) {
+    // Live label — always show while thinking, add duration once >= 1s
+    parts.push(thinkingMs >= 1000 ? `thinking for ${formatElapsed(thinkingMs)}` : "thinking");
+  } else if (thinkingMs >= 1000) {
+    // Frozen — past tense with duration
+    parts.push(`thought for ${formatElapsed(thinkingMs)}`);
+  }
+
+  return parts.join(" · ");
+}
+
+// ── Component ─────────────────────────────────────────────
+
+interface ActivityIndicatorProps {
+  phase: ActivityPhase;
+  elapsedMs: number;
+  thinkingMs: number;
+  isThinking: boolean;
+  tokenEstimate: number;
+  userMessage?: string;
+}
+
+export function ActivityIndicator({
+  phase,
+  elapsedMs,
+  thinkingMs,
+  isThinking,
+  tokenEstimate,
+  userMessage = "",
+}: ActivityIndicatorProps) {
+  const theme = useTheme();
+
+  // Spinner frame
+  const [spinnerFrame, setSpinnerFrame] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setSpinnerFrame((f) => (f + 1) % SPINNER_FRAMES.length);
+    }, SPINNER_INTERVAL);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Color pulse
+  const [colorFrame, setColorFrame] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setColorFrame((f) => (f + 1) % PULSE_COLORS.length);
+    }, PULSE_INTERVAL);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Ellipsis
+  const [ellipsisFrame, setEllipsisFrame] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setEllipsisFrame((f) => (f + 1) % ELLIPSIS_FRAMES.length);
+    }, ELLIPSIS_INTERVAL);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Phrase rotation — pick phrases based on phase + user message, shuffle, rotate
+  const phrases = useMemo(
+    () => shuffleArray(selectPhrases(phase, userMessage)),
+    [phase, userMessage],
+  );
+  const phraseInterval = phase === "waiting" ? WAITING_PHRASE_INTERVAL : OTHER_PHRASE_INTERVAL;
+  const [phraseIndex, setPhraseIndex] = useState(0);
+  useEffect(() => {
+    setPhraseIndex(0);
+    const timer = setInterval(() => {
+      setPhraseIndex((i) => (i + 1) % phrases.length);
+    }, phraseInterval);
+    return () => clearInterval(timer);
+  }, [phrases, phraseInterval]);
+
+  const spinnerColor = PULSE_COLORS[colorFrame];
+  const phrase = phrases[phraseIndex];
+  const ellipsis = ELLIPSIS_FRAMES[ellipsisFrame];
+
+  // Pad ellipsis to prevent text from shifting
+  const paddedEllipsis = ellipsis + " ".repeat(3 - ellipsis.length);
+
+  const meta = buildMetaSuffix(elapsedMs, thinkingMs, isThinking, tokenEstimate);
+
+  return (
+    <Box>
+      <Text color={spinnerColor} bold>
+        {SPINNER_FRAMES[spinnerFrame]}{" "}
+      </Text>
+      <Text color={spinnerColor} bold>
+        {phrase}
+      </Text>
+      <Text color={theme.textDim}>{paddedEllipsis}</Text>
+      {meta && (
+        <Text color={theme.textDim}>
+          {"  ("}
+          {meta}
+          {")"}
+        </Text>
+      )}
+    </Box>
+  );
+}

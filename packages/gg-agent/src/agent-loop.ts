@@ -1,5 +1,6 @@
 import {
   stream,
+  EventStream,
   type Message,
   type ToolCall,
   type ToolResult,
@@ -7,9 +8,33 @@ import {
   type ContentPart,
   type AssistantMessage,
 } from "@kenkaiiii/gg-ai";
-import type { AgentEvent, AgentOptions, AgentResult, AgentTool, ToolContext } from "./types.js";
+import type {
+  AgentEvent,
+  AgentOptions,
+  AgentResult,
+  AgentTool,
+  ToolContext,
+  ToolExecuteResult,
+  StructuredToolResult,
+} from "./types.js";
 
 const DEFAULT_MAX_TURNS = 40;
+
+/**
+ * Detect context window overflow errors from LLM providers.
+ * Anthropic: "prompt is too long: N tokens > M maximum"
+ * OpenAI:    "context_length_exceeded" / "maximum context length"
+ */
+export function isContextOverflow(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message.toLowerCase();
+  return (
+    msg.includes("prompt is too long") ||
+    msg.includes("context_length_exceeded") ||
+    msg.includes("maximum context length") ||
+    (msg.includes("token") && msg.includes("exceed"))
+  );
+}
 
 export async function* agentLoop(
   messages: Message[],
@@ -20,38 +45,68 @@ export async function* agentLoop(
 
   const totalUsage: Usage = { inputTokens: 0, outputTokens: 0 };
   let turn = 0;
+  let overflowRetried = false;
 
   while (turn < maxTurns) {
     options.signal?.throwIfAborted();
     turn++;
 
-    const result = stream({
-      provider: options.provider,
-      model: options.model,
-      messages,
-      tools: options.tools,
-      maxTokens: options.maxTokens,
-      temperature: options.temperature,
-      thinking: options.thinking,
-      apiKey: options.apiKey,
-      baseUrl: options.baseUrl,
-      signal: options.signal,
-      accountId: options.accountId,
-    });
-
-    // Suppress unhandled rejection if the iterator path throws first
-    result.response.catch(() => {});
-
-    // Forward streaming deltas
-    for await (const event of result) {
-      if (event.type === "text_delta") {
-        yield { type: "text_delta" as const, text: event.text };
-      } else if (event.type === "thinking_delta") {
-        yield { type: "thinking_delta" as const, text: event.text };
+    // ── Mid-loop context transform (compaction / truncation) ──
+    if (options.transformContext) {
+      const transformed = await options.transformContext(messages);
+      if (transformed !== messages) {
+        messages.length = 0;
+        messages.push(...transformed);
       }
     }
 
-    const response = await result.response;
+    // ── Call LLM with overflow recovery ──
+    let response;
+    try {
+      const result = stream({
+        provider: options.provider,
+        model: options.model,
+        messages,
+        tools: options.tools,
+        maxTokens: options.maxTokens,
+        temperature: options.temperature,
+        thinking: options.thinking,
+        apiKey: options.apiKey,
+        baseUrl: options.baseUrl,
+        signal: options.signal,
+        accountId: options.accountId,
+      });
+
+      // Suppress unhandled rejection if the iterator path throws first
+      result.response.catch(() => {});
+
+      // Forward streaming deltas
+      for await (const event of result) {
+        if (event.type === "text_delta") {
+          yield { type: "text_delta" as const, text: event.text };
+        } else if (event.type === "thinking_delta") {
+          yield { type: "thinking_delta" as const, text: event.text };
+        }
+      }
+
+      response = await result.response;
+    } catch (err) {
+      // Context overflow: compact via transformContext and retry once
+      if (!overflowRetried && isContextOverflow(err) && options.transformContext) {
+        overflowRetried = true;
+        const transformed = await options.transformContext(messages);
+        if (transformed !== messages) {
+          messages.length = 0;
+          messages.push(...transformed);
+        }
+        turn--; // Don't count the failed turn
+        continue;
+      }
+      throw err;
+    }
+
+    // Reset overflow flag after successful call
+    overflowRetried = false;
 
     // Accumulate usage
     totalUsage.inputTokens += response.usage.inputTokens;
@@ -81,22 +136,24 @@ export async function* agentLoop(
       };
     }
 
-    // Extract and execute tool calls
+    // Extract and execute tool calls in parallel
     const toolCalls = extractToolCalls(response.message.content);
     const toolResults: ToolResult[] = [];
+    const eventStream = new EventStream<AgentEvent>();
 
-    for (const toolCall of toolCalls) {
-      options.signal?.throwIfAborted();
+    // Launch all tool calls in parallel
+    const executions = toolCalls.map(async (toolCall) => {
+      const startTime = Date.now();
 
-      yield {
+      eventStream.push({
         type: "tool_call_start" as const,
         toolCallId: toolCall.id,
         name: toolCall.name,
         args: toolCall.args,
-      };
+      });
 
-      const startTime = Date.now();
       let resultContent: string;
+      let details: unknown;
       let isError = false;
 
       const tool = toolMap.get(toolCall.name);
@@ -109,8 +166,18 @@ export async function* agentLoop(
           const ctx: ToolContext = {
             signal: options.signal ?? AbortSignal.timeout(300_000),
             toolCallId: toolCall.id,
+            onUpdate: (update: unknown) => {
+              eventStream.push({
+                type: "tool_call_update" as const,
+                toolCallId: toolCall.id,
+                update,
+              });
+            },
           };
-          resultContent = await tool.execute(parsed, ctx);
+          const raw = await tool.execute(parsed, ctx);
+          const normalized = normalizeToolResult(raw);
+          resultContent = normalized.content;
+          details = normalized.details;
         } catch (err) {
           isError = true;
           resultContent = err instanceof Error ? err.message : String(err);
@@ -119,20 +186,37 @@ export async function* agentLoop(
 
       const durationMs = Date.now() - startTime;
 
-      yield {
+      eventStream.push({
         type: "tool_call_end" as const,
         toolCallId: toolCall.id,
         result: resultContent,
+        details,
         isError,
         durationMs,
-      };
-
-      toolResults.push({
-        type: "tool_result",
-        toolCallId: toolCall.id,
-        content: resultContent,
-        isError: isError || undefined,
       });
+
+      return { toolCallId: toolCall.id, content: resultContent, isError };
+    });
+
+    // Close event stream when all tools complete
+    Promise.all(executions)
+      .then((results) => {
+        for (const tc of toolCalls) {
+          const r = results.find((x) => x.toolCallId === tc.id)!;
+          toolResults.push({
+            type: "tool_result",
+            toolCallId: tc.id,
+            content: r.content,
+            isError: r.isError || undefined,
+          });
+        }
+        eventStream.close();
+      })
+      .catch((err) => eventStream.abort(err instanceof Error ? err : new Error(String(err))));
+
+    // Yield events as they arrive from parallel tools
+    for await (const event of eventStream) {
+      yield event;
     }
 
     // Push tool results back into conversation
@@ -155,6 +239,10 @@ export async function* agentLoop(
     totalTurns: turn,
     totalUsage: { ...totalUsage },
   };
+}
+
+function normalizeToolResult(raw: ToolExecuteResult): StructuredToolResult {
+  return typeof raw === "string" ? { content: raw } : raw;
 }
 
 function extractToolCalls(content: string | ContentPart[]): ToolCall[] {
