@@ -1,12 +1,12 @@
 {
   "name": "@kenkaiiii/gg-ai",
-  "version": "0.0.1",
+  "version": "0.0.3",
   "type": "module",
   "description": "Unified LLM streaming API for Anthropic and OpenAI",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/kenkaiiii/gg-coder",
+    "url": "git+https://github.com/kenkaiiii/gg-coder.git",
     "directory": "packages/gg-ai"
   },
   "exports": {

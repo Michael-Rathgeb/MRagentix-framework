@@ -12,6 +12,7 @@ import { Footer } from "./components/Footer.js";
 import { ModelSelector } from "./components/ModelSelector.js";
 import { useTheme } from "./theme/theme.js";
 import { getGitBranch } from "../utils/git.js";
+import { getModel } from "../core/model-registry.js";
 
 // ── Completed Item Types ───────────────────────────────────
 
@@ -131,6 +132,8 @@ export interface AppProps {
   showThinking?: boolean;
   showTokenUsage?: boolean;
   onSlashCommand?: (input: string) => Promise<string | null>;
+  loggedInProviders?: Provider[];
+  credentialsByProvider?: Record<string, { accessToken: string; accountId?: string }>;
 }
 
 // ── App Component ──────────────────────────────────────────
@@ -144,10 +147,17 @@ export function App(props: AppProps) {
   const [overlay, setOverlay] = useState<"model" | null>(null);
   const [lastUserMessage, setLastUserMessage] = useState("");
   const [gitBranch, setGitBranch] = useState<string | null>(null);
+  const [currentModel, setCurrentModel] = useState(props.model);
+  const [currentProvider, setCurrentProvider] = useState(props.provider);
   const messagesRef = useRef<Message[]>(props.messages);
   const nextIdRef = useRef(0);
 
   const getId = () => String(nextIdRef.current++);
+
+  // Derive credentials for the current provider
+  const currentCreds = props.credentialsByProvider?.[currentProvider];
+  const activeApiKey = currentCreds?.accessToken ?? props.apiKey;
+  const activeAccountId = currentCreds?.accountId ?? props.accountId;
 
   // Load git branch
   useEffect(() => {
@@ -157,14 +167,14 @@ export function App(props: AppProps) {
   const agentLoop = useAgentLoop(
     messagesRef,
     {
-      provider: props.provider,
-      model: props.model,
+      provider: currentProvider,
+      model: currentModel,
       tools: props.tools,
       maxTokens: props.maxTokens,
       thinking: props.thinking,
-      apiKey: props.apiKey,
+      apiKey: activeApiKey,
       baseUrl: props.baseUrl,
-      accountId: props.accountId,
+      accountId: activeAccountId,
     },
     {
       onTurnText: useCallback((text: string, thinking: string) => {
@@ -230,15 +240,29 @@ export function App(props: AppProps) {
 
   const handleSubmit = useCallback(
     async (input: string) => {
+      const trimmed = input.trim();
+
+      // Handle /model directly — open inline selector
+      if (trimmed === "/model" || trimmed === "/m") {
+        setOverlay("model");
+        return;
+      }
+
+      // Handle /clear — reset session
+      if (trimmed === "/clear") {
+        setHistory([]);
+        setLiveItems([]);
+        messagesRef.current = messagesRef.current.slice(0, 1); // keep system prompt
+        agentLoop.reset();
+        setLiveItems([{ kind: "info", text: "Session cleared.", id: getId() }]);
+        return;
+      }
+
       // Check slash commands
       if (props.onSlashCommand && input.startsWith("/")) {
         const result = await props.onSlashCommand(input);
         if (result !== null) {
           setLiveItems((prev) => [...prev, { kind: "info", text: result, id: getId() }]);
-
-          if (input.trim() === "/model" || input.trim() === "/m") {
-            setOverlay("model");
-          }
           return;
         }
       }
@@ -283,8 +307,18 @@ export function App(props: AppProps) {
 
   const handleModelSelect = useCallback((value: string) => {
     setOverlay(null);
-    const [_provider, _model] = value.split(":");
-    setLiveItems((prev) => [...prev, { kind: "info", text: `Switched to ${value}`, id: getId() }]);
+    const colonIdx = value.indexOf(":");
+    if (colonIdx === -1) return;
+    const newProvider = value.slice(0, colonIdx) as Provider;
+    const newModelId = value.slice(colonIdx + 1);
+    setCurrentProvider(newProvider);
+    setCurrentModel(newModelId);
+    const modelInfo = getModel(newModelId);
+    const displayName = modelInfo?.name ?? newModelId;
+    setLiveItems((prev) => [
+      ...prev,
+      { kind: "info", text: `Switched to ${displayName}`, id: getId() },
+    ]);
   }, []);
 
   const { stdout } = useStdout();
@@ -360,21 +394,26 @@ export function App(props: AppProps) {
           showThinking={props.showThinking}
           userMessage={lastUserMessage}
         />
-
-        {/* Overlay */}
-        {overlay === "model" && (
-          <ModelSelector onSelect={handleModelSelect} onCancel={() => setOverlay(null)} />
-        )}
       </Box>
 
-      {/* Input + Footer pinned at bottom */}
+      {/* Input + Footer/ModelSelector pinned at bottom */}
       <InputArea onSubmit={handleSubmit} onAbort={handleAbort} disabled={agentLoop.isRunning} />
-      <Footer
-        model={props.model}
-        tokensIn={agentLoop.totalTokens.input}
-        cwd={props.cwd}
-        gitBranch={gitBranch}
-      />
+      {overlay === "model" ? (
+        <ModelSelector
+          onSelect={handleModelSelect}
+          onCancel={() => setOverlay(null)}
+          loggedInProviders={props.loggedInProviders ?? [currentProvider]}
+          currentModel={currentModel}
+          currentProvider={currentProvider}
+        />
+      ) : (
+        <Footer
+          model={currentModel}
+          tokensIn={agentLoop.totalTokens.input}
+          cwd={props.cwd}
+          gitBranch={gitBranch}
+        />
+      )}
     </Box>
   );
 }

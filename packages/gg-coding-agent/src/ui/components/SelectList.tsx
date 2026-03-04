@@ -12,11 +12,12 @@ interface SelectListProps {
   items: SelectListItem[];
   onSelect: (value: string) => void;
   onCancel: () => void;
+  initialIndex?: number;
 }
 
-export function SelectList({ items, onSelect, onCancel }: SelectListProps) {
+export function SelectList({ items, onSelect, onCancel, initialIndex = 0 }: SelectListProps) {
   const theme = useTheme();
-  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [selectedIndex, setSelectedIndex] = useState(initialIndex);
   const [filter, setFilter] = useState("");
 
   const filtered = useMemo(() => {

@@ -26,7 +26,7 @@ Commands:
 
 Options:
   -p, --provider <name>     LLM provider (anthropic, openai) [default: anthropic]
-  -m, --model <name>        Model name [default: claude-sonnet-4-6]
+  -m, --model <name>        Model name [default: claude-opus-4-6]
       --base-url <url>      Custom API base URL
       --system-prompt <text> Override system prompt
       --thinking <level>    Thinking level (low, medium, high)
@@ -86,7 +86,7 @@ function main(): void {
   }
 
   const provider = (values.provider ?? "anthropic") as "anthropic" | "openai";
-  const model = values.model ?? (provider === "openai" ? "gpt-4.1" : "claude-sonnet-4-6");
+  const model = values.model ?? (provider === "openai" ? "gpt-4.1" : "claude-opus-4-6");
 
   const thinkingLevel = values.thinking as ThinkingLevel | undefined;
 
@@ -147,6 +147,27 @@ async function runInkTUI(opts: {
   await authStorage.load();
   const creds = await authStorage.resolveCredentials(provider);
 
+  // Detect all logged-in providers and preload their credentials
+  const allProviders: Provider[] = ["anthropic", "openai"];
+  const loggedInProviders: Provider[] = [];
+  const credentialsByProvider: Record<string, { accessToken: string; accountId?: string }> = {};
+
+  for (const p of allProviders) {
+    const stored = await authStorage.getCredentials(p);
+    if (stored) {
+      loggedInProviders.push(p);
+      try {
+        const resolved = await authStorage.resolveCredentials(p);
+        credentialsByProvider[p] = {
+          accessToken: resolved.accessToken,
+          accountId: resolved.accountId,
+        };
+      } catch {
+        // Token refresh failed — still mark as logged in
+      }
+    }
+  }
+
   // Build system prompt & tools
   const systemPrompt = opts.systemPrompt ?? (await buildSystemPrompt(cwd));
   const tools = createTools(cwd);
@@ -165,6 +186,8 @@ async function runInkTUI(opts: {
     baseUrl: opts.baseUrl,
     accountId: creds.accountId,
     cwd,
+    loggedInProviders,
+    credentialsByProvider,
   });
 }
 

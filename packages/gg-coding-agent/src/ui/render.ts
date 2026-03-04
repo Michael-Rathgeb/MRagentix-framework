@@ -20,6 +20,8 @@ export interface RenderAppConfig {
   showThinking?: boolean;
   showTokenUsage?: boolean;
   onSlashCommand?: (input: string) => Promise<string | null>;
+  loggedInProviders?: Provider[];
+  credentialsByProvider?: Record<string, { accessToken: string; accountId?: string }>;
 }
 
 export async function renderApp(config: RenderAppConfig): Promise<void> {
@@ -43,6 +45,8 @@ export async function renderApp(config: RenderAppConfig): Promise<void> {
         showThinking: config.showThinking,
         showTokenUsage: config.showTokenUsage,
         onSlashCommand: config.onSlashCommand,
+        loggedInProviders: config.loggedInProviders,
+        credentialsByProvider: config.credentialsByProvider,
       }),
     ),
   );

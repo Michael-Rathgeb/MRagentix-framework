@@ -23,6 +23,7 @@ export interface AgentLoopOptions {
 export interface UseAgentLoopReturn {
   run: (userContent: string) => Promise<void>;
   abort: () => void;
+  reset: () => void;
   isRunning: boolean;
   streamingText: string;
   streamingThinking: string;
@@ -111,6 +112,14 @@ export function useAgentLoop(
 
   const abort = useCallback(() => {
     abortRef.current?.abort();
+  }, []);
+
+  const reset = useCallback(() => {
+    setCurrentTurn(0);
+    setTotalTokens({ input: 0, output: 0 });
+    setStreamingText("");
+    setStreamingThinking("");
+    setActiveToolCalls([]);
   }, []);
 
   const run = useCallback(
@@ -261,6 +270,7 @@ export function useAgentLoop(
   return {
     run,
     abort,
+    reset,
     isRunning,
     streamingText,
     streamingThinking,

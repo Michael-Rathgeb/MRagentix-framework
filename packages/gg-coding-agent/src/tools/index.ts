@@ -8,10 +8,11 @@ import { createGrepTool } from "./grep.js";
 import { createLsTool } from "./ls.js";
 
 export function createTools(cwd: string): AgentTool[] {
+  const readFiles = new Set<string>();
   return [
-    createReadTool(cwd),
-    createWriteTool(cwd),
-    createEditTool(cwd),
+    createReadTool(cwd, readFiles),
+    createWriteTool(cwd, readFiles),
+    createEditTool(cwd, readFiles),
     createBashTool(cwd),
     createFindTool(cwd),
     createGrepTool(cwd),

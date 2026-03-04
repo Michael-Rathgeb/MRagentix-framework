@@ -11,15 +11,20 @@ const EditParams = z.object({
   new_text: z.string().describe("The replacement text"),
 });
 
-export function createEditTool(cwd: string): AgentTool<typeof EditParams> {
+export function createEditTool(cwd: string, readFiles?: Set<string>): AgentTool<typeof EditParams> {
   return {
     name: "edit",
     description:
-      "Replace a specific text string in a file. The old_text must uniquely match " +
-      "exactly one location in the file. Returns a unified diff of the change.",
+      "Replace a specific text string in a file. The file must be read first before editing. " +
+      "The old_text must uniquely match exactly one location in the file. Returns a unified diff of the change.",
     parameters: EditParams,
     async execute({ file_path, old_text, new_text }) {
       const resolved = resolvePath(cwd, file_path);
+
+      if (readFiles && !readFiles.has(resolved)) {
+        throw new Error("File must be read first before editing. Use the read tool first.");
+      }
+
       const content = await fs.readFile(resolved, "utf-8");
 
       // Detect line endings

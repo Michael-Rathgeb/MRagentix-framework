@@ -62,15 +62,17 @@ const ReadParams = z.object({
   limit: z.number().int().min(1).optional().describe("Maximum number of lines to read"),
 });
 
-export function createReadTool(cwd: string): AgentTool<typeof ReadParams> {
+export function createReadTool(cwd: string, readFiles?: Set<string>): AgentTool<typeof ReadParams> {
   return {
     name: "read",
     description:
       "Read a file's contents. Returns numbered lines (cat -n style). " +
-      "Use offset/limit for large files. Binary files return a notice instead of content.",
+      "Output is capped at ~25,000 tokens. If truncated, use offset/limit to read remaining sections. " +
+      "Binary files return a notice instead of content.",
     parameters: ReadParams,
     async execute({ file_path, offset, limit }) {
       const resolved = resolvePath(cwd, file_path);
+      readFiles?.add(resolved);
       const ext = path.extname(resolved).toLowerCase();
 
       if (BINARY_EXTENSIONS.has(ext)) {
@@ -100,7 +102,12 @@ export function createReadTool(cwd: string): AgentTool<typeof ReadParams> {
         .join("\n");
 
       if (result.truncated) {
-        return `${numbered}\n[Truncated: showing ${result.keptLines} of ${result.totalLines} lines]`;
+        const nextOffset = (offset ?? 1) + result.keptLines;
+        return (
+          `${numbered}\n` +
+          `[Truncated: showing lines ${offset ?? 1}-${(offset ?? 1) + result.keptLines - 1} of ${result.totalLines}. ` +
+          `Use offset=${nextOffset} to read more.]`
+        );
       }
       return numbered;
     },

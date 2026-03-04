@@ -76,7 +76,7 @@ export function Footer({ model, tokensIn, cwd, gitBranch }: FooterProps) {
 
   // Build a context bar (5 chars wide)
   const barWidth = 8;
-  const filled = Math.round((contextPct / 100) * barWidth);
+  const filled = Math.min(Math.round((contextPct / 100) * barWidth), barWidth);
   const empty = barWidth - filled;
   const bar = "█".repeat(filled) + "░".repeat(empty);
 

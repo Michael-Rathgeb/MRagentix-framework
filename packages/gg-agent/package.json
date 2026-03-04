@@ -1,12 +1,12 @@
 {
   "name": "@kenkaiiii/gg-agent",
-  "version": "0.0.1",
+  "version": "0.0.3",
   "type": "module",
   "description": "Agentic loop system with tool execution for LLMs",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/kenkaiiii/gg-coder",
+    "url": "git+https://github.com/kenkaiiii/gg-coder.git",
     "directory": "packages/gg-agent"
   },
   "exports": {

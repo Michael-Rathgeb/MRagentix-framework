@@ -2,11 +2,21 @@
 
 A TypeScript monorepo providing a unified LLM streaming API, an agentic loop system, and a CLI coding agent with OAuth authentication for Anthropic and OpenAI providers.
 
+## npm Packages
+
+| Package | npm Name | Description |
+|---|---|---|
+| `packages/gg-ai` | `@kenkaiiii/gg-ai` | Unified LLM streaming API |
+| `packages/gg-agent` | `@kenkaiiii/gg-agent` | Agent loop with tool execution |
+| `packages/gg-coding-agent` | `@kenkaiiii/ggcoder` | CLI coding agent |
+
+**Install**: `npm i -g @kenkaiiii/ggcoder`
+
 ## Project Structure
 
 ```
 packages/
-  ├── gg-ai/                 # @gg/ai — Unified LLM streaming API
+  ├── gg-ai/                 # @kenkaiiii/gg-ai — Unified LLM streaming API
   │   └── src/
   │       ├── types.ts       # Core types (StreamOptions, ContentBlock, events)
   │       ├── errors.ts      # GGAIError, ProviderError
@@ -14,13 +24,13 @@ packages/
   │       ├── providers/     # Anthropic, OpenAI streaming implementations
   │       └── utils/         # EventStream, Zod-to-JSON-Schema
   │
-  ├── gg-agent/              # @gg/agent — Agent loop with tool execution
+  ├── gg-agent/              # @kenkaiiii/gg-agent — Agent loop with tool execution
   │   └── src/
   │       ├── types.ts       # AgentTool, AgentEvent, AgentOptions
   │       ├── agent.ts       # Agent class + AgentStream
   │       └── agent-loop.ts  # Pure async generator loop
   │
-  └── gg-coding-agent/       # @gg/coding-agent — CLI (ggcoder)
+  └── gg-coding-agent/       # @kenkaiiii/ggcoder — CLI (ggcoder)
       └── src/
           ├── cli.ts         # CLI entry point
           ├── core/          # Auth, OAuth, settings, sessions, extensions
@@ -32,7 +42,7 @@ packages/
 
 ## Package Dependencies
 
-`@gg/ai` (standalone) → `@gg/agent` (depends on ai) → `@gg/coding-agent` (depends on both)
+`@kenkaiiii/gg-ai` (standalone) → `@kenkaiiii/gg-agent` (depends on ai) → `@kenkaiiii/ggcoder` (depends on both)
 
 ## Tech Stack
 
@@ -53,16 +63,48 @@ pnpm build                          # tsc across all packages
 pnpm check                          # tsc --noEmit across all packages
 
 # Per-package
-pnpm --filter @gg/ai build
-pnpm --filter @gg/agent build
-pnpm --filter @gg/coding-agent build
+pnpm --filter @kenkaiiii/gg-ai build
+pnpm --filter @kenkaiiii/gg-agent build
+pnpm --filter @kenkaiiii/ggcoder build
 ```
+
+## Publishing to npm
+
+Must use `pnpm publish` (not `npm publish`) so `workspace:*` references resolve to real versions.
+
+### Steps
+
+1. Bump version in all 3 `package.json` files (keep them in sync)
+2. Build all packages: `pnpm build`
+3. Publish in dependency order:
+
+```bash
+pnpm --filter @kenkaiiii/gg-ai publish --no-git-checks
+pnpm --filter @kenkaiiii/gg-agent publish --no-git-checks
+pnpm --filter @kenkaiiii/ggcoder publish --no-git-checks
+```
+
+### Auth
+
+- npm granular access token must be set: `npm set //registry.npmjs.org/:_authToken=<token>`
+- All packages use `"publishConfig": { "access": "public" }` (required for scoped packages)
+- `--no-git-checks` skips git dirty/tag checks (needed since we don't tag releases)
+
+### Verify
+
+```bash
+npm view @kenkaiiii/ggcoder versions --json   # check published versions
+npm i -g @kenkaiiii/ggcoder@<version>         # test install
+ggcoder --help                                # verify CLI works
+```
+
+If `npm i` gets ETARGET after publishing, clear cache: `npm cache clean --force`
 
 ## Organization Rules
 
 - Types → `types.ts` in each package
-- Providers → `providers/` directory in @gg/ai
-- Tools → `tools/` directory in @gg/coding-agent, one file per tool
+- Providers → `providers/` directory in @kenkaiiii/gg-ai
+- Tools → `tools/` directory in @kenkaiiii/ggcoder, one file per tool
 - UI components → `ui/components/`, one component per file
 - OAuth flows → `core/oauth/`, one file per provider
 - Tests → co-located with source files
@@ -83,7 +125,59 @@ Fix ALL errors before continuing. Quick fixes:
 ## Key Patterns
 
 - **StreamResult/AgentStream**: dual-nature objects — async iterable (`for await`) + thenable (`await`)
-- **EventStream**: push-based async iterable in `@gg/ai/utils/event-stream.ts`
+- **EventStream**: push-based async iterable in `@kenkaiiii/gg-ai/utils/event-stream.ts`
 - **agentLoop**: pure async generator — call LLM, yield deltas, execute tools, loop on tool_use
 - **OAuth-only auth**: no API keys, PKCE OAuth flows, tokens in `~/.gg/auth.json`
 - **Zod schemas**: tool parameters defined with Zod, converted to JSON Schema at provider boundary
+
+## Slash Commands
+
+There are two kinds of slash commands:
+
+### 1. UI-handled commands (in `App.tsx`)
+
+Commands that need direct access to React state (UI, overlays, token counters) are handled inline in `handleSubmit` in `src/ui/App.tsx`. These short-circuit before the slash command registry.
+
+**Current UI commands:** `/model` (`/m`), `/clear`
+
+To add a new UI command:
+1. Add a condition in `handleSubmit` after the existing checks:
+   ```tsx
+   if (trimmed === "/mycommand") {
+     // manipulate React state directly
+     setLiveItems([{ kind: "info", text: "Done.", id: getId() }]);
+     return;
+   }
+   ```
+2. If the command needs to reset agent state, call `agentLoop.reset()`.
+
+### 2. Registry commands (in `core/slash-commands.ts`)
+
+Commands that don't need React state live in `createBuiltinCommands()` in `src/core/slash-commands.ts`. They receive a `SlashCommandContext` with methods like `switchModel`, `compact`, `newSession`, `quit`, etc.
+
+**Current registry commands:** `/help` (`/h`, `/?`), `/compact` (`/c`), `/settings` (`/config`), `/session` (`/s`), `/new` (`/n`), `/quit` (`/q`, `/exit`)
+
+To add a new registry command:
+1. Add an entry to the array in `createBuiltinCommands()`:
+   ```ts
+   {
+     name: "mycommand",
+     aliases: ["mc"],
+     description: "Does something useful",
+     usage: "/mycommand [args]",
+     execute(args, ctx) {
+       // Use ctx methods or return a string to display
+       return "Result text";
+     },
+   },
+   ```
+2. If the command needs new capabilities, add the method to `SlashCommandContext` interface and wire it up in `AgentSession.createSlashCommandContext()`.
+
+### When to use which
+
+| Need | Where |
+|---|---|
+| Modify UI state (history, overlays, live items) | `App.tsx` |
+| Reset token counters | `App.tsx` (call `agentLoop.reset()`) |
+| Access agent session (messages, auth, settings) | `slash-commands.ts` registry |
+| Both UI + session access | `App.tsx` (can call session methods via props) |
