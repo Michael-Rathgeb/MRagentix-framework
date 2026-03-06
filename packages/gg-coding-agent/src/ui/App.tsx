@@ -3,7 +3,7 @@ import { Box, Text, Static, useStdout } from "ink";
 import crypto from "node:crypto";
 import type { Message, Provider, ServerToolDefinition, ThinkingLevel } from "@kenkaiiii/gg-ai";
 import type { AgentTool } from "@kenkaiiii/gg-agent";
-import { useAgentLoop } from "./hooks/useAgentLoop.js";
+import { useAgentLoop, type ActivityPhase } from "./hooks/useAgentLoop.js";
 import { UserMessage } from "./components/UserMessage.js";
 import { AssistantMessage } from "./components/AssistantMessage.js";
 import { ToolExecution } from "./components/ToolExecution.js";
@@ -17,6 +17,7 @@ import { Footer } from "./components/Footer.js";
 import { Banner } from "./components/Banner.js";
 import { ModelSelector } from "./components/ModelSelector.js";
 import { useTheme } from "./theme/theme.js";
+import { useTerminalTitle } from "./hooks/useTerminalTitle.js";
 import { getGitBranch } from "../utils/git.js";
 import { getModel } from "../core/model-registry.js";
 import { SessionManager, type MessageEntry } from "../core/session-manager.js";
@@ -187,6 +188,13 @@ export interface AppProps {
 
 export function App(props: AppProps) {
   const theme = useTheme();
+
+  // Terminal title — updated later after agentLoop is created
+  // (hoisted here so the hook is always called in the same order)
+  const [titlePhase, setTitlePhase] = useState<ActivityPhase>("idle");
+  const [titleRunning, setTitleRunning] = useState(false);
+  useTerminalTitle(titlePhase, titleRunning);
+
   // Items scrolled into Static (history)
   const [history, setHistory] = useState<CompletedItem[]>([]);
   // Items from the current/last turn — rendered in the live area so they stay visible
@@ -453,6 +461,12 @@ export function App(props: AppProps) {
     },
   );
 
+  // Sync terminal title with agent loop state
+  useEffect(() => {
+    setTitlePhase(agentLoop.activityPhase);
+    setTitleRunning(agentLoop.isRunning);
+  }, [agentLoop.activityPhase, agentLoop.isRunning]);
+
   const handleSubmit = useCallback(
     async (input: string) => {
       const trimmed = input.trim();
@@ -692,6 +706,7 @@ export function App(props: AppProps) {
           tokensIn={agentLoop.contextUsed}
           cwd={props.cwd}
           gitBranch={gitBranch}
+          turnTokenHistory={agentLoop.turnTokenHistory}
         />
       )}
     </Box>

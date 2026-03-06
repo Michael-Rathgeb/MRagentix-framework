@@ -220,6 +220,28 @@ function buildMetaSuffix(
   return parts.join(" · ");
 }
 
+// ── Shimmer effect ────────────────────────────────────────
+
+const SHIMMER_WIDTH = 3;
+const SHIMMER_INTERVAL = 100;
+
+const ShimmerText: React.FC<{ text: string; color: string; shimmerPos: number }> = ({
+  text,
+  color,
+  shimmerPos,
+}) => (
+  <Text>
+    {text.split("").map((char, i) => {
+      const isBright = Math.abs(i - shimmerPos) <= SHIMMER_WIDTH;
+      return (
+        <Text bold={isBright} color={color} dimColor={!isBright} key={i}>
+          {char}
+        </Text>
+      );
+    })}
+  </Text>
+);
+
 // ── Component ─────────────────────────────────────────────
 
 interface ActivityIndicatorProps {
@@ -268,6 +290,9 @@ export function ActivityIndicator({
     return () => clearInterval(timer);
   }, []);
 
+  // Shimmer position
+  const [shimmerPos, setShimmerPos] = useState(-SHIMMER_WIDTH);
+
   // Phrase rotation — pick phrases based on phase + user message, shuffle, rotate
   const phrases = useMemo(
     () => shuffleArray(selectPhrases(phase, userMessage)),
@@ -287,6 +312,18 @@ export function ActivityIndicator({
   const phrase = phrases[phraseIndex];
   const ellipsis = ELLIPSIS_FRAMES[ellipsisFrame];
 
+  // Shimmer animation — wraps across phrase text length
+  useEffect(() => {
+    setShimmerPos(-SHIMMER_WIDTH);
+    const timer = setInterval(() => {
+      setShimmerPos((pos) => {
+        const max = phrase.length + SHIMMER_WIDTH;
+        return pos >= max ? -SHIMMER_WIDTH : pos + 1;
+      });
+    }, SHIMMER_INTERVAL);
+    return () => clearInterval(timer);
+  }, [phrase]);
+
   // Pad ellipsis to prevent text from shifting
   const paddedEllipsis = ellipsis + " ".repeat(3 - ellipsis.length);
 
@@ -297,9 +334,7 @@ export function ActivityIndicator({
       <Text color={spinnerColor} bold>
         {SPINNER_FRAMES[spinnerFrame]}{" "}
       </Text>
-      <Text color={spinnerColor} bold>
-        {phrase}
-      </Text>
+      <ShimmerText text={phrase} color={spinnerColor} shimmerPos={shimmerPos} />
       <Text color={theme.textDim}>{paddedEllipsis}</Text>
       {meta && (
         <Text color={theme.textDim}>

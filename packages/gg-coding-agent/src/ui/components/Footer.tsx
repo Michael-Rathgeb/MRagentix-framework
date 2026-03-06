@@ -7,6 +7,7 @@ interface FooterProps {
   tokensIn: number;
   cwd: string;
   gitBranch?: string | null;
+  turnTokenHistory?: number[];
 }
 
 // Model ID → short display name
@@ -55,10 +56,43 @@ function formatTokens(tokens: number): string {
 function getContextColor(pct: number, theme: ReturnType<typeof useTheme>): string {
   if (pct >= 80) return theme.error;
   if (pct >= 50) return theme.warning;
-  return theme.textDim;
+  return theme.success;
 }
 
-export function Footer({ model, tokensIn, cwd, gitBranch }: FooterProps) {
+// ── Sparkline ─────────────────────────────────────────────
+
+const SPARK_BLOCKS = [
+  "\u2581",
+  "\u2582",
+  "\u2583",
+  "\u2584",
+  "\u2585",
+  "\u2586",
+  "\u2587",
+  "\u2588",
+];
+
+function sparkline(data: number[]): string {
+  const max = Math.max(...data);
+  if (max === 0) return "";
+  return data.map((v) => SPARK_BLOCKS[Math.round((v / max) * 7)]).join("");
+}
+
+// ── Partial block gauge ───────────────────────────────────
+
+const PARTIAL_BLOCKS = [
+  " ",
+  "\u258F",
+  "\u258E",
+  "\u258D",
+  "\u258C",
+  "\u258B",
+  "\u258A",
+  "\u2589",
+  "\u2588",
+];
+
+export function Footer({ model, tokensIn, cwd, gitBranch, turnTokenHistory = [] }: FooterProps) {
   const theme = useTheme();
   const { stdout } = useStdout();
   const columns = stdout?.columns ?? 80;
@@ -69,18 +103,45 @@ export function Footer({ model, tokensIn, cwd, gitBranch }: FooterProps) {
 
   const contextPct = getContextPercent(model, tokensIn);
   const contextColor = getContextColor(contextPct, theme);
-  const sep = <Text color={theme.border}>{" │ "}</Text>;
+  const sep = <Text color={theme.border}>{" \u2502 "}</Text>;
 
   // Build right side segments
   const modelName = getShortModelName(model);
 
-  // Build a context bar (5 chars wide)
+  // Build a context bar with partial block precision (8 chars × 8 levels = 64 granularity)
   const barWidth = 8;
-  const filled = Math.min(Math.round((contextPct / 100) * barWidth), barWidth);
-  const empty = barWidth - filled;
-  const bar = "█".repeat(filled) + "░".repeat(empty);
+  const fillFloat = Math.min((contextPct / 100) * barWidth, barWidth);
+  const barChars: React.ReactElement[] = [];
+  for (let i = 0; i < barWidth; i++) {
+    const cellFill = Math.max(0, Math.min(1, fillFloat - i));
+    const eighths = Math.round(cellFill * 8);
+    if (eighths === 8) {
+      barChars.push(
+        <Text key={i} color={contextColor}>
+          {PARTIAL_BLOCKS[8]}
+        </Text>,
+      );
+    } else if (eighths > 0) {
+      barChars.push(
+        <Text key={i} color={contextColor}>
+          {PARTIAL_BLOCKS[eighths]}
+        </Text>,
+      );
+    } else {
+      barChars.push(
+        <Text key={i} color={theme.textDim}>
+          {"\u2591"}
+        </Text>,
+      );
+    }
+  }
+
+  // Sparkline from recent turn token history (last 10 turns)
+  const recentHistory = turnTokenHistory.slice(-10);
+  const sparkStr = recentHistory.length > 0 ? sparkline(recentHistory) : "";
 
   // Truncate path if footer would overflow
+  const sparkWidth = sparkStr.length > 0 ? sparkStr.length + 1 : 0;
   const rightLen =
     modelName.length +
     3 +
@@ -90,12 +151,13 @@ export function Footer({ model, tokensIn, cwd, gitBranch }: FooterProps) {
     1 +
     (gitBranch ? gitBranch.length + 5 : 0) +
     formatTokens(tokensIn).length +
+    sparkWidth +
     3 +
     10;
   const maxPath = columns - rightLen - 4;
   const truncPath =
     displayPath.length > maxPath && maxPath > 10
-      ? "…" + displayPath.slice(displayPath.length - maxPath + 1)
+      ? "\u2026" + displayPath.slice(displayPath.length - maxPath + 1)
       : displayPath;
 
   return (
@@ -106,16 +168,22 @@ export function Footer({ model, tokensIn, cwd, gitBranch }: FooterProps) {
           <>
             {sep}
             <Text color={theme.secondary}>
-              {"⎇ "}
+              {"\u2387 "}
               {gitBranch}
             </Text>
           </>
         )}
       </Box>
       <Box>
+        {sparkStr && (
+          <>
+            <Text color={theme.accent}>{sparkStr}</Text>
+            <Text color={theme.textDim}> </Text>
+          </>
+        )}
         <Text color={theme.textDim}>{formatTokens(tokensIn)}</Text>
         {sep}
-        <Text color={contextColor}>{bar}</Text>
+        <Text>{barChars}</Text>
         <Text color={contextColor}> {contextPct}%</Text>
         {sep}
         <Text color={theme.primary} bold>
