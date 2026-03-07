@@ -3,10 +3,7 @@ import { Text, Box } from "ink";
 import { useTheme } from "../theme/theme.js";
 import type { ActivityPhase } from "../hooks/useAgentLoop.js";
 
-// ── Spinner frames ────────────────────────────────────────
-
-const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const SPINNER_INTERVAL = 80;
+import { SPINNER_FRAMES, SPINNER_INTERVAL } from "../spinner-frames.js";
 
 // ── Color pulse cycle ─────────────────────────────────────
 

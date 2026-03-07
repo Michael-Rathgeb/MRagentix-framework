@@ -4,6 +4,7 @@ import type { Message, Provider, ServerToolDefinition, ThinkingLevel } from "@ke
 import type { AgentTool } from "@kenkaiiii/gg-agent";
 import type { ProcessManager } from "../core/process-manager.js";
 import { App, type CompletedItem } from "./App.js";
+import { SplashScreen } from "./components/SplashScreen.js";
 import { ThemeContext, loadTheme } from "./theme/theme.js";
 
 export interface RenderAppConfig {
@@ -40,6 +41,31 @@ export async function renderApp(config: RenderAppConfig): Promise<void> {
   // Clear screen and reserve row 1 for the shimmer line.
   // Set a scroll margin (DECSTBM) so Ink's output stays in rows 2+
   // while row 1 remains pinned — same technique tmux uses for its status bar.
+  process.stdout.write(
+    "\x1b[2J" + // clear screen
+      "\x1b[H" + // cursor to row 1, col 1
+      `\x1b[2;${rows}r` + // scroll region: row 2 to bottom
+      "\x1b[2;1H", // move cursor to row 2 for Ink
+  );
+
+  // Show animated splash screen before the main app
+  await new Promise<void>((resolve) => {
+    const { unmount } = render(
+      React.createElement(
+        ThemeContext.Provider,
+        { value: theme },
+        React.createElement(SplashScreen, {
+          version: config.version,
+          onDone: () => {
+            unmount();
+            resolve();
+          },
+        }),
+      ),
+    );
+  });
+
+  // Clear screen again for the main app
   process.stdout.write(
     "\x1b[2J" + // clear screen
       "\x1b[H" + // cursor to row 1, col 1

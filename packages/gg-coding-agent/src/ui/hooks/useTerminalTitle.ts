@@ -2,19 +2,7 @@ import { useEffect, useState } from "react";
 import { useStdout } from "ink";
 import type { ActivityPhase } from "./useAgentLoop.js";
 
-const SPINNER_FRAMES = [
-  "\u280B",
-  "\u2819",
-  "\u2839",
-  "\u2838",
-  "\u283C",
-  "\u2834",
-  "\u2826",
-  "\u2827",
-  "\u2807",
-  "\u280F",
-];
-const SPINNER_INTERVAL = 80;
+import { SPINNER_FRAMES, SPINNER_INTERVAL } from "../spinner-frames.js";
 
 function getTitleText(phase: ActivityPhase, isRunning: boolean): string {
   if (!isRunning) return "GG Coder";

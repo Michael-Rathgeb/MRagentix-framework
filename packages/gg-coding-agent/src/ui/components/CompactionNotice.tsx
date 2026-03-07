@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Text, Box } from "ink";
 import { useTheme } from "../theme/theme.js";
-
-const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+import { SPINNER_FRAMES, SPINNER_INTERVAL } from "../spinner-frames.js";
 
 const ACCENT_COLOR = "#fbbf24"; // warning/amber
 
@@ -23,7 +22,7 @@ export function CompactionSpinner() {
   useEffect(() => {
     const timer = setInterval(() => {
       setFrame((f) => (f + 1) % SPINNER_FRAMES.length);
-    }, 80);
+    }, SPINNER_INTERVAL);
     return () => clearInterval(timer);
   }, []);
 

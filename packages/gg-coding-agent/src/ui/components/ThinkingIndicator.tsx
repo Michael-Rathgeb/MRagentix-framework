@@ -2,10 +2,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import { Text, Box } from "ink";
 import { useTheme } from "../theme/theme.js";
 
-// ── Spinner frames ────────────────────────────────────────
-
-const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const SPINNER_INTERVAL = 80;
+import { SPINNER_FRAMES, SPINNER_INTERVAL } from "../spinner-frames.js";
 
 // ── Color pulse cycle ─────────────────────────────────────
 
