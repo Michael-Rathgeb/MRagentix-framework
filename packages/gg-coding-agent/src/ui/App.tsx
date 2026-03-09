@@ -5,6 +5,7 @@ import crypto, { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { playNotificationSound } from "../utils/sound.js";
 import type {
   Message,
   Provider,
@@ -783,6 +784,7 @@ export function App(props: AppProps) {
           toolsUsed: toolsUsed.join(",") || "none",
         });
         setDoneStatus({ durationMs, toolsUsed, verb: pickDurationVerb(toolsUsed) });
+        playNotificationSound();
         // Two-phase flush to avoid Ink text clipping.
         // Phase 1 (here): clear the live area so Ink commits a render with
         // the smaller output and updates its internal line counter.
