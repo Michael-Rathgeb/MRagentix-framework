@@ -2,7 +2,7 @@ import React, { useState, useRef, useCallback, useEffect, useMemo } from "react"
 import { Box, Text, Static, useStdout } from "ink";
 import { useTerminalSize } from "./hooks/useTerminalSize.js";
 import crypto, { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -231,6 +231,51 @@ function getTaskCount(cwd: string): number {
   }
 }
 
+interface PendingTaskInfo {
+  id: string;
+  title: string;
+  prompt: string;
+}
+
+function getNextPendingTask(cwd: string): PendingTaskInfo | null {
+  try {
+    const hash = createHash("sha256").update(cwd).digest("hex").slice(0, 16);
+    const data = readFileSync(
+      join(homedir(), ".gg-tasks", "projects", hash, "tasks.json"),
+      "utf-8",
+    );
+    const tasks = JSON.parse(data) as {
+      id: string;
+      title: string;
+      prompt: string;
+      text?: string;
+      status: string;
+    }[];
+    const pending = tasks.find((t) => t.status === "pending");
+    if (!pending) return null;
+    return {
+      id: pending.id,
+      title: pending.title,
+      prompt: pending.prompt || pending.text || pending.title,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function markTaskInProgress(cwd: string, taskId: string): void {
+  try {
+    const hash = createHash("sha256").update(cwd).digest("hex").slice(0, 16);
+    const filePath = join(homedir(), ".gg-tasks", "projects", hash, "tasks.json");
+    const data = readFileSync(filePath, "utf-8");
+    const tasks = JSON.parse(data) as { id: string; status: string }[];
+    const updated = tasks.map((t) => (t.id === taskId ? { ...t, status: "in-progress" } : t));
+    writeFileSync(filePath, JSON.stringify(updated, null, 2) + "\n", "utf-8");
+  } catch {
+    // ignore
+  }
+}
+
 // ── App Props ──────────────────────────────────────────────
 
 export interface AppProps {
@@ -290,6 +335,10 @@ export function App(props: AppProps) {
   const [liveItems, setLiveItems] = useState<CompletedItem[]>([]);
   const [overlay, setOverlay] = useState<"model" | "tasks" | null>(null);
   const [taskCount, setTaskCount] = useState(() => getTaskCount(props.cwd));
+  const [runAllTasks, setRunAllTasks] = useState(false);
+  const runAllTasksRef = useRef(false);
+  const startTaskRef = useRef<(title: string, prompt: string, taskId: string) => void>(() => {});
+  const cwdRef = useRef(props.cwd);
   const [staticKey, setStaticKey] = useState(0);
   const [lastUserMessage, setLastUserMessage] = useState("");
   const [doneStatus, setDoneStatus] = useState<{
@@ -746,9 +795,26 @@ export function App(props: AppProps) {
           }
           return [];
         });
+
+        // Run-all: auto-start next pending task after a short delay
+        // (allow the two-phase flush to complete first)
+        if (runAllTasksRef.current) {
+          setTimeout(() => {
+            const cwd = cwdRef.current;
+            const next = getNextPendingTask(cwd);
+            if (next) {
+              markTaskInProgress(cwd, next.id);
+              startTaskRef.current(next.title, next.prompt, next.id);
+            } else {
+              setRunAllTasks(false);
+              log("INFO", "tasks", "Run-all complete — no more pending tasks");
+            }
+          }, 500);
+        }
       }, []),
       onAborted: useCallback(() => {
         log("WARN", "agent", "Agent run aborted by user");
+        setRunAllTasks(false);
         setLiveItems((prev) => {
           const next = prev.map((item) =>
             item.kind === "subagent_group" ? { ...item, aborted: true } : item,
@@ -1138,6 +1204,64 @@ export function App(props: AppProps) {
     }
   };
 
+  // ── Start a task (shared by manual "work on it" and run-all) ──
+  const startTask = useCallback(
+    (title: string, prompt: string, taskId: string) => {
+      setTaskCount(getTaskCount(props.cwd));
+      // Reset to a fresh session before sending the task
+      stdout?.write("\x1b[2J\x1b[3J\x1b[H");
+      setHistory([{ kind: "banner", id: "banner" }]);
+      setLiveItems([]);
+      messagesRef.current = messagesRef.current.slice(0, 1);
+      agentLoop.reset();
+      persistedIndexRef.current = messagesRef.current.length;
+      const sm = sessionManagerRef.current;
+      if (sm) {
+        void sm.create(props.cwd, currentProvider, currentModel).then((s) => {
+          sessionPathRef.current = s.path;
+          log("INFO", "tasks", "New session for task", { path: s.path });
+        });
+      }
+
+      // Inject completion instruction so the agent marks the task done
+      const shortId = taskId.slice(0, 8);
+      const completionHint =
+        `\n\n---\nWhen you have fully completed this task, call the tasks tool to mark it done:\n` +
+        `tasks({ action: "done", id: "${shortId}" })`;
+      const fullPrompt = prompt + completionHint;
+
+      // Show the short title in the TUI, but send the full prompt to the agent
+      const taskItem: TaskItem = { kind: "task", title, id: getId() };
+      setLastUserMessage(title);
+      setDoneStatus(null);
+      setLiveItems([taskItem]);
+      void (async () => {
+        try {
+          await agentLoop.run(fullPrompt);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          log("ERROR", "error", msg);
+          const isAbort = msg.includes("aborted") || msg.includes("abort");
+          setLiveItems((prev) => [
+            ...prev,
+            isAbort
+              ? { kind: "info", text: "Request was stopped.", id: getId() }
+              : { kind: "error", message: msg, id: getId() },
+          ]);
+          // Stop run-all if a task errors
+          setRunAllTasks(false);
+        }
+      })();
+    },
+    [props.cwd, stdout, agentLoop, currentProvider, currentModel],
+  );
+
+  // Keep refs in sync for access from stale closures (onDone)
+  startTaskRef.current = startTask;
+  useEffect(() => {
+    runAllTasksRef.current = runAllTasks;
+  }, [runAllTasks]);
+
   const isTaskView = overlay === "tasks";
 
   return (
@@ -1161,44 +1285,18 @@ export function App(props: AppProps) {
             setStaticKey((k) => k + 1);
             setOverlay(null);
           }}
-          onWorkOnTask={(title, prompt) => {
+          onWorkOnTask={(title, prompt, taskId) => {
             setOverlay(null);
-            setTaskCount(getTaskCount(props.cwd));
-            // Reset to a fresh session before sending the task
-            stdout?.write("\x1b[2J\x1b[3J\x1b[H");
-            setHistory([{ kind: "banner", id: "banner" }]);
-            setLiveItems([]);
-            messagesRef.current = messagesRef.current.slice(0, 1);
-            agentLoop.reset();
-            persistedIndexRef.current = messagesRef.current.length;
-            const sm = sessionManagerRef.current;
-            if (sm) {
-              void sm.create(props.cwd, currentProvider, currentModel).then((s) => {
-                sessionPathRef.current = s.path;
-                log("INFO", "tasks", "New session for task", { path: s.path });
-              });
+            startTask(title, prompt, taskId);
+          }}
+          onRunAllTasks={() => {
+            setOverlay(null);
+            setRunAllTasks(true);
+            const next = getNextPendingTask(props.cwd);
+            if (next) {
+              markTaskInProgress(props.cwd, next.id);
+              startTask(next.title, next.prompt, next.id);
             }
-
-            // Show the short title in the TUI, but send the full prompt to the agent
-            const taskItem: TaskItem = { kind: "task", title, id: getId() };
-            setLastUserMessage(title);
-            setDoneStatus(null);
-            setLiveItems([taskItem]);
-            void (async () => {
-              try {
-                await agentLoop.run(prompt);
-              } catch (err) {
-                const msg = err instanceof Error ? err.message : String(err);
-                log("ERROR", "error", msg);
-                const isAbort = msg.includes("aborted") || msg.includes("abort");
-                setLiveItems((prev) => [
-                  ...prev,
-                  isAbort
-                    ? { kind: "info", text: "Request was stopped.", id: getId() }
-                    : { kind: "error", message: msg, id: getId() },
-                ]);
-              }
-            })();
           }}
         />
       ) : (

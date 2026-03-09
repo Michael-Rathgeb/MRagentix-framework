@@ -75,13 +75,13 @@ export function Banner({ version, model, cwd, taskCount }: BannerProps) {
           {displayPath}
           {"  "}
         </Text>
-        <Text color={theme.border}>Shift+`</Text>
+        <Text color={theme.primary}>Shift+`</Text>
         <Text color={theme.textDim}> tasks</Text>
         {taskCount !== undefined && taskCount > 0 && (
           <Text color={theme.secondary}> ({taskCount})</Text>
         )}
         <Text color={theme.textDim}>{"  "}</Text>
-        <Text color={theme.border}>Shift+Tab</Text>
+        <Text color={theme.primary}>Shift+Tab</Text>
         <Text color={theme.textDim}> thinking</Text>
       </Box>
     </Box>

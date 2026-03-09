@@ -101,11 +101,18 @@ function TaskGradientText({ text }: { text: string }) {
 interface TaskOverlayProps {
   cwd: string;
   onClose: () => void;
-  onWorkOnTask: (title: string, prompt: string) => void;
+  onWorkOnTask: (title: string, prompt: string, id: string) => void;
+  onRunAllTasks: () => void;
   agentRunning?: boolean;
 }
 
-export function TaskOverlay({ cwd, onClose, onWorkOnTask, agentRunning }: TaskOverlayProps) {
+export function TaskOverlay({
+  cwd,
+  onClose,
+  onWorkOnTask,
+  onRunAllTasks,
+  agentRunning,
+}: TaskOverlayProps) {
   const theme = useTheme();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -244,7 +251,7 @@ export function TaskOverlay({ cwd, onClose, onWorkOnTask, agentRunning }: TaskOv
       return;
     }
 
-    if (input === " " && tasks.length > 0) {
+    if (input === "t" && tasks.length > 0) {
       setTasks((prev) =>
         prev.map((t, i) => {
           if (i !== selectedIndex) return t;
@@ -255,7 +262,7 @@ export function TaskOverlay({ cwd, onClose, onWorkOnTask, agentRunning }: TaskOv
     }
 
     // Work on it — send to agent loop and close overlay
-    if ((key.return || input === "w") && tasks.length > 0) {
+    if (key.return && tasks.length > 0) {
       if (agentRunning) {
         showStatus("Agent is busy — wait for it to finish");
         return;
@@ -265,8 +272,23 @@ export function TaskOverlay({ cwd, onClose, onWorkOnTask, agentRunning }: TaskOv
         setTasks((prev) =>
           prev.map((t, i) => (i === selectedIndex ? { ...t, status: "in-progress" } : t)),
         );
-        onWorkOnTask(task.title, task.prompt);
+        onWorkOnTask(task.title, task.prompt, task.id);
       }
+      return;
+    }
+
+    // Run all pending tasks sequentially
+    if (input === "R") {
+      if (agentRunning) {
+        showStatus("Agent is busy — wait for it to finish");
+        return;
+      }
+      const hasPending = tasks.some((t) => t.status === "pending");
+      if (!hasPending) {
+        showStatus("No pending tasks to run");
+        return;
+      }
+      onRunAllTasks();
       return;
     }
   });
@@ -312,7 +334,11 @@ export function TaskOverlay({ cwd, onClose, onWorkOnTask, agentRunning }: TaskOv
       </Box>
 
       {tasks.length === 0 && mode === "normal" && (
-        <Text color={theme.textDim}>{"  No tasks. Press [a] to add one."}</Text>
+        <Text color={theme.textDim}>
+          {"  No tasks. Press "}
+          <Text color={theme.primary}>a</Text>
+          {" to add one."}
+        </Text>
       )}
 
       {visibleTasks.map((task, vi) => {
@@ -345,7 +371,22 @@ export function TaskOverlay({ cwd, onClose, onWorkOnTask, agentRunning }: TaskOv
       {status && <Text color="#4ade80">{" " + status}</Text>}
 
       <Text color={theme.textDim}>
-        ↑↓ navigate · a add · e edit · d delete · space toggle · enter/w work on it · Shift+` close
+        <Text color={theme.primary}>↑↓</Text>
+        {" move · ("}
+        <Text color={theme.primary}>a</Text>
+        {")dd · ("}
+        <Text color={theme.primary}>e</Text>
+        {")dit · ("}
+        <Text color={theme.primary}>d</Text>
+        {")elete · ("}
+        <Text color={theme.primary}>t</Text>
+        {")oggle · "}
+        <Text color={theme.primary}>Enter</Text>
+        {" start · ("}
+        <Text color={theme.primary}>R</Text>
+        {")un all · "}
+        <Text color={theme.primary}>ESC</Text>
+        {" close"}
       </Text>
     </Box>
   );
