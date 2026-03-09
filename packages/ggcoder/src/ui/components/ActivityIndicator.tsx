@@ -98,6 +98,55 @@ const CONTEXTUAL_PHRASES = [
       "Piecing it together",
     ],
   },
+  {
+    keywords: /\b(delete|remove|drop|clean\s*up|prune|trim)\b/i,
+    phrases: ["Identifying dead code", "Marking for removal", "Cleaning house", "Pruning the tree"],
+  },
+  {
+    keywords: /\b(move|rename|reorganize|restructure|migrate)\b/i,
+    phrases: ["Planning the move", "Mapping the migration", "Tracing dependencies", "Reorganizing"],
+  },
+  {
+    keywords: /\b(fetch|url|http|api|request|web|download|scrape)\b/i,
+    phrases: ["Checking the docs", "Looking it up", "Pulling references", "Gathering info"],
+  },
+  {
+    keywords: /\b(debug|log|trace|inspect|breakpoint|stack\s*trace)\b/i,
+    phrases: [
+      "Following the trail",
+      "Inspecting the stack",
+      "Chasing the bug",
+      "Tracing execution",
+      "Zeroing in",
+    ],
+  },
+  {
+    keywords: /\b(type|types|interface|generic|typescript|schema)\b/i,
+    phrases: [
+      "Mapping the types",
+      "Checking the signatures",
+      "Modeling the data",
+      "Tracing the type graph",
+    ],
+  },
+  {
+    keywords: /\b(commit|push|pull|merge|rebase|branch|git|pr)\b/i,
+    phrases: [
+      "Reviewing the history",
+      "Checking the diff",
+      "Preparing changes",
+      "Sorting out the branch",
+    ],
+  },
+  {
+    keywords: /\b(install|dependency|package|upgrade|update|version)\b/i,
+    phrases: [
+      "Checking dependencies",
+      "Reviewing versions",
+      "Sorting out packages",
+      "Mapping the dep tree",
+    ],
+  },
 ];
 
 const GENERAL_PHRASES = [
@@ -139,7 +188,7 @@ const GENERATING_PHRASES = [
   "Formulating",
 ];
 
-const TOOLS_PHRASES = [
+const TOOLS_GENERIC = [
   "Running tools",
   "Executing",
   "Working",
@@ -148,14 +197,44 @@ const TOOLS_PHRASES = [
   "Carrying out tasks",
 ];
 
-function selectPhrases(phase: ActivityPhase, userMessage: string): string[] {
+const TOOL_PHRASES: Record<string, string[]> = {
+  bash: ["Running a command", "Executing in the shell", "Running a process"],
+  read: ["Reading a file", "Scanning the source", "Studying the code"],
+  write: ["Writing a file", "Creating a file", "Laying down code"],
+  edit: ["Editing a file", "Applying changes", "Patching the code"],
+  grep: ["Searching the codebase", "Scanning for matches", "Grepping"],
+  find: ["Locating files", "Searching the tree", "Scanning the directory"],
+  ls: ["Listing files", "Browsing the directory", "Scanning contents"],
+  subagent: ["Dispatching a subagent", "Delegating work", "Spinning up an agent"],
+  "web-fetch": ["Fetching from the web", "Pulling a page", "Downloading content"],
+  tasks: ["Managing tasks", "Updating the task list", "Organizing work"],
+  "task-output": ["Checking task output", "Reading task results"],
+  "task-stop": ["Stopping a task", "Halting a running task"],
+};
+
+function selectToolPhrases(activeToolNames: string[]): string[] {
+  if (activeToolNames.length === 0) return TOOLS_GENERIC;
+
+  const phrases: string[] = [];
+  for (const name of activeToolNames) {
+    const specific = TOOL_PHRASES[name];
+    if (specific) phrases.push(...specific);
+  }
+  return phrases.length > 0 ? phrases : TOOLS_GENERIC;
+}
+
+function selectPhrases(
+  phase: ActivityPhase,
+  userMessage: string,
+  activeToolNames: string[],
+): string[] {
   switch (phase) {
     case "thinking":
       return THINKING_PHRASES;
     case "generating":
       return GENERATING_PHRASES;
     case "tools":
-      return TOOLS_PHRASES;
+      return selectToolPhrases(activeToolNames);
     default: {
       // waiting / idle — use contextual phrases based on user message
       for (const set of CONTEXTUAL_PHRASES) {
@@ -248,6 +327,7 @@ interface ActivityIndicatorProps {
   isThinking: boolean;
   tokenEstimate: number;
   userMessage?: string;
+  activeToolNames?: string[];
 }
 
 export function ActivityIndicator({
@@ -257,6 +337,7 @@ export function ActivityIndicator({
   isThinking,
   tokenEstimate,
   userMessage = "",
+  activeToolNames = [],
 }: ActivityIndicatorProps) {
   const theme = useTheme();
 
@@ -290,10 +371,11 @@ export function ActivityIndicator({
   // Shimmer position
   const [shimmerPos, setShimmerPos] = useState(-SHIMMER_WIDTH);
 
-  // Phrase rotation — pick phrases based on phase + user message, shuffle, rotate
+  // Phrase rotation — pick phrases based on phase + user message + active tools, shuffle, rotate
+  const toolNamesKey = activeToolNames.sort().join(",");
   const phrases = useMemo(
-    () => shuffleArray(selectPhrases(phase, userMessage)),
-    [phase, userMessage],
+    () => shuffleArray(selectPhrases(phase, userMessage, activeToolNames)),
+    [phase, userMessage, toolNamesKey], // activeToolNames captured via stable string key
   );
   const phraseInterval = phase === "waiting" ? WAITING_PHRASE_INTERVAL : OTHER_PHRASE_INTERVAL;
   const [phraseIndex, setPhraseIndex] = useState(0);

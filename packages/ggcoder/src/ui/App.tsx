@@ -182,15 +182,30 @@ function formatDuration(ms: number): string {
 
 function pickDurationVerb(toolsUsed: string[]): string {
   const has = (name: string) => toolsUsed.includes(name);
+  const hasAny = (...names: string[]) => names.some(has);
+  const writing = has("edit") || has("write");
+  const reading = has("read") || has("grep") || has("find") || has("ls");
 
-  // Tool-specific phrases (most specific first)
+  // Multi-tool combos (most specific first)
+  if (has("subagent") && writing) return "Orchestrated changes for";
   if (has("subagent")) return "Delegated work for";
+  if (has("web-fetch") && writing) return "Researched & coded for";
+  if (has("web-fetch") && reading) return "Researched for";
+  if (has("web-fetch")) return "Fetched the web for";
+  if (has("bash") && writing) return "Built & ran for";
   if (has("edit") && has("write")) return "Crafted code for";
+  if (has("edit") && has("bash")) return "Refactored & tested for";
+  if (has("edit") && reading) return "Refactored for";
   if (has("edit")) return "Refactored for";
+  if (has("write") && has("bash")) return "Wrote & ran for";
+  if (has("write") && reading) return "Wrote code for";
   if (has("write")) return "Wrote code for";
   if (has("bash") && has("grep")) return "Hacked away for";
+  if (has("bash") && reading) return "Ran & investigated for";
   if (has("bash")) return "Executed commands for";
+  if (hasAny("tasks", "task-output", "task-stop")) return "Managed tasks for";
   if (has("grep") && has("read")) return "Investigated for";
+  if (has("grep") && has("find")) return "Scoured the codebase for";
   if (has("grep")) return "Searched for";
   if (has("read") && has("find")) return "Explored for";
   if (has("read")) return "Studied the code for";
@@ -1335,6 +1350,7 @@ export function App(props: AppProps) {
                 isThinking={agentLoop.isThinking}
                 tokenEstimate={agentLoop.streamedTokenEstimate}
                 userMessage={lastUserMessage}
+                activeToolNames={agentLoop.activeToolCalls.map((tc) => tc.name)}
               />
             </Box>
           ) : (
