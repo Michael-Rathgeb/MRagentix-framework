@@ -87,6 +87,8 @@ export function InputArea({
   const { stdout } = useStdout();
   const columns = stdout?.columns ?? 80;
   const [menuIndex, setMenuIndex] = useState(0);
+  const [pasteStart, setPasteStart] = useState(-1); // char index where paste begins
+  const [pasteEnd, setPasteEnd] = useState(-1); // char index where paste ends
 
   // Detect if we're in slash command mode
   const isSlashMode = value.startsWith("/") && !value.includes(" ") && commands.length > 0;
@@ -189,6 +191,8 @@ export function InputArea({
           setValue("");
           setCursor(0);
           setImages([]);
+          setPasteStart(-1);
+          setPasteEnd(-1);
           return;
         }
 
@@ -200,6 +204,8 @@ export function InputArea({
           setValue("");
           setCursor(0);
           setImages([]);
+          setPasteStart(-1);
+          setPasteEnd(-1);
         }
         return;
       }
@@ -217,6 +223,8 @@ export function InputArea({
           setValue("");
           setCursor(0);
           setImages([]);
+          setPasteStart(-1);
+          setPasteEnd(-1);
         } else {
           onAbort();
         }
@@ -295,6 +303,8 @@ export function InputArea({
           setValue("");
           setCursor(0);
           setImages([]);
+          setPasteStart(-1);
+          setPasteEnd(-1);
         }
         lastEscRef.current = now;
         return;
@@ -327,8 +337,18 @@ export function InputArea({
       }
 
       if (input) {
-        setValue((v) => v.slice(0, cursor) + input + v.slice(cursor));
-        setCursor((c) => c + input.length);
+        // Ink calls useInput once with the full string for pasted text (input.length > 1)
+        if (input.length > 1 && (input.includes("\n") || input.includes("\r"))) {
+          // Normalize line endings for consistent display
+          const normalized = input.replace(/\r\n?/g, "\n");
+          setValue((v) => v.slice(0, cursor) + normalized + v.slice(cursor));
+          setCursor((c) => c + normalized.length);
+          setPasteStart(cursor);
+          setPasteEnd(cursor + normalized.length);
+        } else {
+          setValue((v) => v.slice(0, cursor) + input + v.slice(cursor));
+          setCursor((c) => c + input.length);
+        }
       }
     },
     { isActive },
@@ -413,87 +433,137 @@ export function InputArea({
             </Text>
           </Box>
         )}
-        {displayLines.map((line, i) => {
-          const showCursor = i === cursorDisplayLine;
-          const col = cursorLineInfo.col;
+        {(() => {
+          if (pasteStart >= 0 && pasteEnd >= 0 && value) {
+            const typedBefore = value.slice(0, pasteStart);
+            const pastedPortion = value.slice(pasteStart, pasteEnd);
+            const typedAfter = value.slice(pasteEnd);
+            const lineCount = pastedPortion.split("\n").length;
 
-          // Calculate the absolute character offset where this display line starts
-          let lineStartOffset = 0;
-          for (let j = 0; j < startLine + i; j++) {
-            lineStartOffset += visualLines[j].length;
-            // Account for newline characters between hard lines
-            // (visual lines from wrapping don't have newlines between them)
-          }
-          // Adjust for newlines: count how many hard-line boundaries precede this visual line
-          const hardLines = value.split("\n");
-          let offset = 0;
-          let vlIndex = 0;
-          for (let h = 0; h < hardLines.length && vlIndex <= startLine + i; h++) {
-            const wrapped = wrapLine(
-              hardLines[h],
-              contentWidth > 0 ? contentWidth : value.length + 1,
-            );
-            for (let w = 0; w < wrapped.length && vlIndex <= startLine + i; w++) {
-              if (vlIndex === startLine + i) {
-                lineStartOffset = offset;
+            // Combine typed-before + paste indicator + typed-after into a single visible line
+            const indicator = `[Pasted text #${pastedPortion.length} +${lineCount} lines]`;
+            const combined = typedBefore + indicator + typedAfter;
+            const combinedLines = getVisualLines(combined, columns);
+
+            // Cursor position mapped into the combined string
+            const cursorInCombined =
+              cursor <= pasteStart
+                ? cursor
+                : cursor >= pasteEnd
+                  ? cursor - (pasteEnd - pasteStart) + indicator.length
+                  : pasteStart + indicator.length; // cursor inside paste → put after indicator
+
+            return combinedLines.map((line, i) => {
+              // Find which combined-line the cursor is on
+              let charsSoFar = 0;
+              let cursorOnThisLine = false;
+              let col = 0;
+              for (let j = 0; j <= i; j++) {
+                if (j === i) {
+                  col = cursorInCombined - charsSoFar;
+                  cursorOnThisLine = col >= 0 && col <= line.length;
+                }
+                charsSoFar += combinedLines[j].length;
               }
-              offset += wrapped[w].length;
-              vlIndex++;
-            }
-            offset++; // newline
+
+              const before = cursorOnThisLine ? line.slice(0, col) : line;
+              const charUnderCursor = cursorOnThisLine ? (col < line.length ? line[col] : " ") : "";
+              const after = cursorOnThisLine ? line.slice(col + (col < line.length ? 1 : 0)) : "";
+
+              return (
+                <Box key={`paste-${i}`}>
+                  <Text color={disabled ? theme.textDim : theme.inputPrompt} bold>
+                    {i === 0 ? PROMPT : "  "}
+                  </Text>
+                  <Text color={theme.text}>{before}</Text>
+                  {cursorOnThisLine && (
+                    <Text color={theme.text} inverse={cursorVisible}>
+                      {charUnderCursor}
+                    </Text>
+                  )}
+                  {after && <Text color={theme.text}>{after}</Text>}
+                </Box>
+              );
+            });
           }
 
-          // Determine color for each character based on whether it's in the command portion
-          const renderSegments = (text: string, textStartOffset: number) => {
-            if (!isCommand || textStartOffset >= commandEndIndex) {
-              // Entirely normal text
-              return <Text color={theme.text}>{text}</Text>;
+          return displayLines.map((line, i) => {
+            const showCursor = i === cursorDisplayLine;
+            const col = cursorLineInfo.col;
+
+            // Calculate the absolute character offset where this display line starts
+            let lineStartOffset = 0;
+            for (let j = 0; j < startLine + i; j++) {
+              lineStartOffset += visualLines[j].length;
             }
-            const cmdChars = Math.min(text.length, commandEndIndex - textStartOffset);
-            if (cmdChars >= text.length) {
-              // Entirely command text
-              return (
-                <Text color={theme.commandColor} bold>
-                  {text}
-                </Text>
+            const hardLines = value.split("\n");
+            let offset = 0;
+            let vlIndex = 0;
+            for (let h = 0; h < hardLines.length && vlIndex <= startLine + i; h++) {
+              const wrapped = wrapLine(
+                hardLines[h],
+                contentWidth > 0 ? contentWidth : value.length + 1,
               );
+              for (let w = 0; w < wrapped.length && vlIndex <= startLine + i; w++) {
+                if (vlIndex === startLine + i) {
+                  lineStartOffset = offset;
+                }
+                offset += wrapped[w].length;
+                vlIndex++;
+              }
+              offset++; // newline
             }
-            // Split: command portion + normal portion
+
+            // Determine color for each character based on whether it's in the command portion
+            const renderSegments = (text: string, textStartOffset: number) => {
+              if (!isCommand || textStartOffset >= commandEndIndex) {
+                return <Text color={theme.text}>{text}</Text>;
+              }
+              const cmdChars = Math.min(text.length, commandEndIndex - textStartOffset);
+              if (cmdChars >= text.length) {
+                return (
+                  <Text color={theme.commandColor} bold>
+                    {text}
+                  </Text>
+                );
+              }
+              return (
+                <>
+                  <Text color={theme.commandColor} bold>
+                    {text.slice(0, cmdChars)}
+                  </Text>
+                  <Text color={theme.text}>{text.slice(cmdChars)}</Text>
+                </>
+              );
+            };
+
+            const before = showCursor ? line.slice(0, col) : line;
+            const charUnderCursor = showCursor ? (col < line.length ? line[col] : " ") : "";
+            const after = showCursor ? line.slice(col + (col < line.length ? 1 : 0)) : "";
+            const cursorCharOffset = lineStartOffset + col;
+            const cursorInCommand = isCommand && cursorCharOffset < commandEndIndex;
+
             return (
-              <>
-                <Text color={theme.commandColor} bold>
-                  {text.slice(0, cmdChars)}
+              <Box key={i}>
+                <Text color={disabled ? theme.textDim : theme.inputPrompt} bold>
+                  {i === 0 ? PROMPT : "  "}
                 </Text>
-                <Text color={theme.text}>{text.slice(cmdChars)}</Text>
-              </>
+                {renderSegments(before, lineStartOffset)}
+                {showCursor && (
+                  <Text
+                    color={cursorInCommand ? theme.commandColor : theme.text}
+                    bold={cursorInCommand}
+                    inverse={cursorVisible}
+                  >
+                    {charUnderCursor}
+                  </Text>
+                )}
+                {after &&
+                  renderSegments(after, lineStartOffset + col + (col < line.length ? 1 : 0))}
+              </Box>
             );
-          };
-
-          const before = showCursor ? line.slice(0, col) : line;
-          const charUnderCursor = showCursor ? (col < line.length ? line[col] : " ") : "";
-          const after = showCursor ? line.slice(col + (col < line.length ? 1 : 0)) : "";
-          const cursorCharOffset = lineStartOffset + col;
-          const cursorInCommand = isCommand && cursorCharOffset < commandEndIndex;
-
-          return (
-            <Box key={i}>
-              <Text color={disabled ? theme.textDim : theme.inputPrompt} bold>
-                {i === 0 ? PROMPT : "  "}
-              </Text>
-              {renderSegments(before, lineStartOffset)}
-              {showCursor && (
-                <Text
-                  color={cursorInCommand ? theme.commandColor : theme.text}
-                  bold={cursorInCommand}
-                  inverse={cursorVisible}
-                >
-                  {charUnderCursor}
-                </Text>
-              )}
-              {after && renderSegments(after, lineStartOffset + col + (col < line.length ? 1 : 0))}
-            </Box>
-          );
-        })}
+          });
+        })()}
       </Box>
       {/* Slash command menu — shown below the input box */}
       {isSlashMode && filteredCommands.length > 0 && (
