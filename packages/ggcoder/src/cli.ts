@@ -22,7 +22,7 @@ import { ensureAppDirs, getAppPaths } from "./config.js";
 import { initLogger, log, closeLogger } from "./core/logger.js";
 import { buildSystemPrompt } from "./system-prompt.js";
 import { createTools } from "./tools/index.js";
-import { MCPClientManager, DEFAULT_MCP_SERVERS } from "./core/mcp/index.js";
+import { MCPClientManager, getMCPServers } from "./core/mcp/index.js";
 import { discoverAgents } from "./core/agents.js";
 import { loginAnthropic } from "./core/oauth/anthropic.js";
 import { loginOpenAI } from "./core/oauth/openai.js";
@@ -298,7 +298,9 @@ async function runInkTUI(opts: {
   // Connect MCP servers
   const mcpManager = new MCPClientManager();
   try {
-    const mcpTools = await mcpManager.connectAll(DEFAULT_MCP_SERVERS);
+    // Always connect GLM vision MCP if user has GLM credentials (available on provider switch)
+    const glmApiKey = credentialsByProvider["glm"]?.accessToken;
+    const mcpTools = await mcpManager.connectAll(getMCPServers("glm", glmApiKey));
     tools.push(...mcpTools);
   } catch (err) {
     log(

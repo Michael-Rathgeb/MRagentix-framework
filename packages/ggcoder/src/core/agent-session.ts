@@ -17,7 +17,7 @@ import { discoverSkills, type Skill } from "./skills.js";
 import { ensureAppDirs } from "../config.js";
 import { buildSystemPrompt } from "../system-prompt.js";
 import { createTools, type ProcessManager } from "../tools/index.js";
-import { MCPClientManager, DEFAULT_MCP_SERVERS } from "./mcp/index.js";
+import { MCPClientManager, getMCPServers } from "./mcp/index.js";
 import { log } from "./logger.js";
 import crypto from "node:crypto";
 
@@ -120,7 +120,15 @@ export class AgentSession {
     // Connect MCP servers (non-blocking — failures are logged and skipped)
     this.mcpManager = new MCPClientManager();
     try {
-      const mcpTools = await this.mcpManager.connectAll(DEFAULT_MCP_SERVERS);
+      // Always connect GLM vision MCP if credentials exist (available on provider switch)
+      let glmApiKey: string | undefined;
+      try {
+        const glmCreds = await this.authStorage.resolveCredentials("glm");
+        glmApiKey = glmCreds.accessToken;
+      } catch {
+        // GLM not configured — skip vision MCP
+      }
+      const mcpTools = await this.mcpManager.connectAll(getMCPServers("glm", glmApiKey));
       this.tools.push(...mcpTools);
     } catch (err) {
       log(

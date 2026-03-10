@@ -36,6 +36,22 @@ export function isContextOverflow(err: unknown): boolean {
   );
 }
 
+/**
+ * Detect overloaded/rate-limit errors from LLM providers.
+ * HTTP 429 (rate limit) or 529/503 (overloaded).
+ */
+export function isOverloaded(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message.toLowerCase();
+  return (
+    msg.includes("overloaded") ||
+    msg.includes("rate limit") ||
+    msg.includes("too many requests") ||
+    msg.includes("429") ||
+    msg.includes("529")
+  );
+}
+
 export async function* agentLoop(
   messages: Message[],
   options: AgentOptions,
@@ -48,7 +64,10 @@ export async function* agentLoop(
   let turn = 0;
   let consecutivePauses = 0;
   let overflowRetries = 0;
+  let overloadRetries = 0;
   const MAX_OVERFLOW_RETRIES = 3;
+  const MAX_OVERLOAD_RETRIES = 3;
+  const OVERLOAD_RETRY_DELAY_MS = 3_000;
 
   while (turn < maxTurns) {
     options.signal?.throwIfAborted();
@@ -126,11 +145,19 @@ export async function* agentLoop(
         turn--; // Don't count the failed turn
         continue;
       }
+      // Overloaded / rate-limited: wait 3s and retry (up to 3 times)
+      if (overloadRetries < MAX_OVERLOAD_RETRIES && isOverloaded(err)) {
+        overloadRetries++;
+        await new Promise((r) => setTimeout(r, OVERLOAD_RETRY_DELAY_MS));
+        turn--; // Don't count the failed turn
+        continue;
+      }
       throw err;
     }
 
-    // Reset overflow counter after successful call
+    // Reset retry counters after successful call
     overflowRetries = 0;
+    overloadRetries = 0;
 
     // Accumulate usage
     totalUsage.inputTokens += response.usage.inputTokens;

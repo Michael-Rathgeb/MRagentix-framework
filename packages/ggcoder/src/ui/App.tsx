@@ -1025,6 +1025,8 @@ export function App(props: AppProps) {
       setLiveItems([userItem]);
 
       // Build user content — plain string or content array with images
+      const modelInfo = getModel(currentModel);
+      const modelSupportsImages = modelInfo?.supportsImages ?? true;
       let userContent: string | (TextContent | ImageContent)[];
       if (hasImages) {
         const parts: (TextContent | ImageContent)[] = [];
@@ -1037,11 +1039,28 @@ export function App(props: AppProps) {
               type: "text",
               text: `<file name="${img.fileName}">\n${img.data}\n</file>`,
             });
-          } else {
+          } else if (modelSupportsImages) {
             parts.push({ type: "image", mediaType: img.mediaType, data: img.data });
+          } else {
+            // GLM models: save image to temp file and instruct model to use vision MCP tool
+            const ext = img.mediaType.split("/")[1] ?? "png";
+            const tmpPath = `/tmp/ggcoder-img-${Date.now()}.${ext}`;
+            try {
+              writeFileSync(tmpPath, Buffer.from(img.data, "base64"));
+              parts.push({
+                type: "text",
+                text: `[User attached an image saved at: ${tmpPath} — use the image_analysis tool to view and analyze it]`,
+              });
+            } catch {
+              parts.push({
+                type: "text",
+                text: `[User attached an image but it could not be saved for analysis]`,
+              });
+            }
           }
         }
-        userContent = parts;
+        // If only text parts remain after stripping images, simplify to plain string
+        userContent = parts.length === 1 && parts[0].type === "text" ? parts[0].text : parts;
       } else {
         userContent = input;
       }

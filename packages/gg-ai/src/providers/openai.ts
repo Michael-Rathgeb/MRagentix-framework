@@ -22,10 +22,10 @@ async function runStream(options: StreamOptions, result: StreamResult): Promise<
     ...(options.baseUrl ? { baseURL: options.baseUrl } : {}),
   });
 
-  const messages = toOpenAIMessages(options.messages);
-
   // GLM and Moonshot use a custom `thinking` body param instead of `reasoning_effort`
   const usesThinkingParam = options.provider === "glm" || options.provider === "moonshot";
+
+  const messages = toOpenAIMessages(options.messages);
 
   const params: OpenAI.ChatCompletionCreateParams = {
     model: options.model,
@@ -177,7 +177,14 @@ async function runStream(options: StreamOptions, result: StreamResult): Promise<
 
 function toError(err: unknown): ProviderError {
   if (err instanceof OpenAI.APIError) {
-    return new ProviderError("openai", err.message, {
+    // Include full error body for debugging — GLM/Moonshot use non-standard error shapes
+    let msg = err.message;
+    const body = err.error as Record<string, unknown> | undefined;
+    if (body) {
+      // Append raw error body so debug logs capture the exact API response
+      msg += ` | body: ${JSON.stringify(body)}`;
+    }
+    return new ProviderError("openai", msg, {
       statusCode: err.status,
       cause: err,
     });
