@@ -380,6 +380,7 @@ async function runInkTUI(opts: {
     processManager,
     settingsFile: paths.settingsFile,
     mcpManager,
+    authStorage,
   });
 
   closeLogger();
