@@ -5,7 +5,6 @@ export interface AgentDefinition {
   name: string;
   description: string;
   tools: string[];
-  model?: string;
   systemPrompt: string;
   source: "global" | "project";
 }
@@ -72,7 +71,6 @@ async function loadAgentsFromDir(
  * name: scout
  * description: Fast codebase recon that returns compressed context
  * tools: read, grep, find, ls, bash
- * model: claude-haiku-4-5
  * ---
  *
  * You are a scout. Quickly investigate a codebase...
@@ -82,7 +80,6 @@ export function parseAgentFile(raw: string, source: "global" | "project"): Agent
   let name = "";
   let description = "";
   let tools: string[] = [];
-  let model: string | undefined;
   let systemPrompt = raw;
 
   if (raw.startsWith("---")) {
@@ -104,10 +101,10 @@ export function parseAgentFile(raw: string, source: "global" | "project"): Agent
             .split(",")
             .map((t) => t.trim())
             .filter(Boolean);
-        } else if (key === "model") model = value;
+        }
       }
     }
   }
 
-  return { name, description, tools, model, systemPrompt, source };
+  return { name, description, tools, systemPrompt, source };
 }

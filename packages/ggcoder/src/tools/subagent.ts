@@ -61,7 +61,6 @@ export function createSubAgentTool(
         }
       }
 
-      const useModel = agentDef?.model ?? parentModel;
       const useProvider = parentProvider;
 
       // Build CLI args — limit turns to prevent runaway context growth
@@ -70,7 +69,7 @@ export function createSubAgentTool(
         "--provider",
         useProvider,
         "--model",
-        useModel,
+        parentModel,
         "--max-turns",
         String(SUB_AGENT_MAX_TURNS),
       ];
