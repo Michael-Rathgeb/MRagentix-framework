@@ -35,6 +35,9 @@ export interface BusEventMap {
   compaction_start: { messageCount: number };
   compaction_end: { originalCount: number; newCount: number };
 
+  // Branch events
+  branch_created: { leafId: string; messagesKept: number };
+
   // Input events
   user_input: { content: string };
   slash_command: { name: string; args: string };

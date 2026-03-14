@@ -10,6 +10,10 @@ export interface SlashCommandContext {
   setSetting: (key: string, value: unknown) => Promise<void>;
   getModelList: () => string;
   quit: () => void;
+  /** Create a branch (rewind N messages and fork). */
+  branch: (stepsBack?: number) => Promise<string>;
+  /** List all branches in the current session. */
+  listBranches: () => Promise<string>;
 }
 
 export interface SlashCommand {
@@ -161,6 +165,28 @@ export function createBuiltinCommands(): SlashCommand[] {
       async execute(_args, ctx) {
         await ctx.newSession();
         return "New session created.";
+      },
+    },
+    {
+      name: "branch",
+      aliases: ["b"],
+      description: "Create a branch (rewind and fork the conversation)",
+      usage: "/branch [steps_back] — rewind N messages and fork (default: 2)",
+      async execute(args, ctx) {
+        const stepsBack = args ? parseInt(args, 10) : 2;
+        if (isNaN(stepsBack) || stepsBack < 1) {
+          return "Usage: /branch [N] — rewind N messages (default: 2)";
+        }
+        return ctx.branch(stepsBack);
+      },
+    },
+    {
+      name: "branches",
+      aliases: [],
+      description: "List all branches in the current session",
+      usage: "/branches",
+      async execute(_args, ctx) {
+        return ctx.listBranches();
       },
     },
     {

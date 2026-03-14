@@ -8,7 +8,7 @@ import {
 } from "./slash-commands.js";
 import { SettingsManager } from "./settings-manager.js";
 import { AuthStorage } from "./auth-storage.js";
-import { SessionManager, type MessageEntry } from "./session-manager.js";
+import { SessionManager, type MessageEntry, type BranchInfo } from "./session-manager.js";
 import { ExtensionLoader } from "./extensions/loader.js";
 import type { ExtensionContext } from "./extensions/types.js";
 import { shouldCompact, compact } from "./compaction/compactor.js";
@@ -19,6 +19,7 @@ import { buildSystemPrompt } from "../system-prompt.js";
 import { createTools, type ProcessManager } from "../tools/index.js";
 import { MCPClientManager, getMCPServers } from "./mcp/index.js";
 import { log } from "./logger.js";
+import { setEstimatorModel } from "./compaction/token-estimator.js";
 import crypto from "node:crypto";
 
 // ── Options ────────────────────────────────────────────────
@@ -75,6 +76,8 @@ export class AgentSession {
   private sessionId = "";
   private sessionPath = "";
   private lastPersistedIndex = 0;
+  /** Current leaf entry ID in the session DAG — used to chain parentIds for branching. */
+  private currentLeafId: string | null = null;
 
   private opts: AgentSessionOptions;
 
@@ -90,6 +93,9 @@ export class AgentSession {
   }
 
   async initialize(): Promise<void> {
+    // Set model for accurate token estimation
+    setEstimatorModel(this.model);
+
     const paths = await ensureAppDirs();
 
     // Load settings & auth
@@ -264,6 +270,7 @@ export class AgentSession {
     const prevProvider = this.provider;
     if (provider) this.provider = provider as Provider;
     this.model = model;
+    setEstimatorModel(model);
     this.eventBus.emit("model_change", { provider: this.provider, model: this.model });
 
     // Reconnect MCP servers when provider changes (e.g. GLM needs Z.AI tools, others don't)
@@ -344,6 +351,56 @@ export class AgentSession {
     this.eventBus.emit("session_start", { sessionId: this.sessionId });
   }
 
+  /**
+   * Create a branch at a specific point in the conversation.
+   * Rewinds the message history to the given entry and sets the leaf
+   * so new messages fork from that point.
+   *
+   * @param stepsBack Number of messages to rewind (default: 2 — backs up past last assistant + tool)
+   */
+  async branch(stepsBack = 2): Promise<{ branchedFrom: number; messagesKept: number }> {
+    // Load the full session to access the DAG
+    const loaded = await this.sessionManager.load(this.sessionPath);
+    const branch = this.sessionManager.getBranch(loaded.entries, this.currentLeafId);
+
+    // Walk back stepsBack message entries
+    const messageEntries = branch.filter((e) => e.type === "message");
+    const targetIndex = Math.max(0, messageEntries.length - stepsBack);
+
+    if (targetIndex === 0) {
+      throw new Error("Cannot branch — already at the start of the conversation.");
+    }
+
+    // Set leaf to the entry just before the branch point
+    const newLeafEntry = messageEntries[targetIndex - 1]!;
+    this.currentLeafId = newLeafEntry.id;
+    await this.sessionManager.updateLeaf(this.sessionPath, newLeafEntry.id);
+
+    // Rebuild messages from the new branch
+    const branchMessages = this.sessionManager.getMessages(loaded.entries, this.currentLeafId);
+    const systemMsg = this.messages[0];
+    this.messages = [systemMsg, ...branchMessages];
+    this.lastPersistedIndex = this.messages.length;
+
+    this.eventBus.emit("branch_created", {
+      leafId: this.currentLeafId,
+      messagesKept: branchMessages.length,
+    });
+
+    return {
+      branchedFrom: messageEntries.length,
+      messagesKept: branchMessages.length,
+    };
+  }
+
+  /**
+   * List all branches in the current session.
+   */
+  async listBranches(): Promise<BranchInfo[]> {
+    const loaded = await this.sessionManager.load(this.sessionPath);
+    return this.sessionManager.listBranches(loaded.entries);
+  }
+
   getState(): AgentSessionState {
     return {
       provider: this.provider,
@@ -376,7 +433,11 @@ export class AgentSession {
 
   private async loadExistingSession(sessionPath: string): Promise<void> {
     const loaded = await this.sessionManager.load(sessionPath);
-    const loadedMessages = this.sessionManager.getMessages(loaded.entries);
+    // Use the leaf from the header to walk the correct branch
+    const loadedMessages = this.sessionManager.getMessages(loaded.entries, loaded.header.leafId);
+
+    // Track the current leaf for subsequent entries
+    this.currentLeafId = loaded.header.leafId;
 
     // Rebuild messages: keep system, add loaded
     const systemMsg = this.messages[0]; // Already built
@@ -416,14 +477,17 @@ export class AgentSession {
   }
 
   private async persistMessage(message: Message): Promise<void> {
+    const entryId = crypto.randomUUID();
     const entry: MessageEntry = {
       type: "message",
-      id: crypto.randomUUID(),
-      parentId: null,
+      id: entryId,
+      parentId: this.currentLeafId,
       timestamp: new Date().toISOString(),
       message,
     };
     await this.sessionManager.appendEntry(this.sessionPath, entry);
+    this.currentLeafId = entryId;
+    await this.sessionManager.updateLeaf(this.sessionPath, entryId);
   }
 
   private createSlashCommandContext(): SlashCommandContext {
@@ -454,6 +518,19 @@ export class AgentSession {
       },
       quit: () => {
         process.exit(0);
+      },
+      branch: async (stepsBack?: number) => {
+        const result = await this.branch(stepsBack);
+        return `Branched: rewound from ${result.branchedFrom} to ${result.messagesKept} messages. New messages will fork from here.`;
+      },
+      listBranches: async () => {
+        const branches = await this.listBranches();
+        if (branches.length <= 1) return "No branches — conversation is linear.";
+        const lines = branches.map(
+          (b, i) =>
+            `  ${i + 1}. ${b.leafId.slice(0, 8)} — ${b.entryCount} entries (${b.leafId === this.currentLeafId ? "active" : "inactive"})`,
+        );
+        return `${branches.length} branch(es):\n${lines.join("\n")}`;
       },
     };
   }

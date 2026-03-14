@@ -1,9 +1,9 @@
-import fs from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import type { AgentTool } from "@kenkaiiii/gg-agent";
 import { resolvePath, rejectSymlink } from "./path-utils.js";
 import { truncateHead } from "./truncate.js";
+import { localOperations, type ToolOperations } from "./operations.js";
 
 export const BINARY_EXTENSIONS = new Set([
   ".png",
@@ -71,7 +71,11 @@ const ReadParams = z.object({
   limit: z.number().int().min(1).optional().describe("Maximum number of lines to read"),
 });
 
-export function createReadTool(cwd: string, readFiles?: Set<string>): AgentTool<typeof ReadParams> {
+export function createReadTool(
+  cwd: string,
+  readFiles?: Set<string>,
+  ops: ToolOperations = localOperations,
+): AgentTool<typeof ReadParams> {
   return {
     name: "read",
     description:
@@ -86,11 +90,11 @@ export function createReadTool(cwd: string, readFiles?: Set<string>): AgentTool<
       const ext = path.extname(resolved).toLowerCase();
 
       if (BINARY_EXTENSIONS.has(ext)) {
-        const stat = await fs.stat(resolved);
+        const stat = await ops.stat(resolved);
         return `Binary file: ${resolved} (${ext}, ${stat.size} bytes)`;
       }
 
-      const raw = await fs.readFile(resolved, "utf-8");
+      const raw = await ops.readFile(resolved);
       let lines = raw.split("\n");
 
       // Apply offset/limit

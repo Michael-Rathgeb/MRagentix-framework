@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -7,6 +6,7 @@ import type { AgentTool } from "@kenkaiiii/gg-agent";
 import type { ProcessManager } from "../core/process-manager.js";
 import { killProcessTree } from "../utils/process.js";
 import { truncateTail } from "./truncate.js";
+import { localOperations, type ToolOperations } from "./operations.js";
 
 const DEFAULT_TIMEOUT = 120_000; // 120 seconds
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 MB — cap buffered output to prevent OOM
@@ -82,6 +82,7 @@ const BashParams = z.object({
 export function createBashTool(
   cwd: string,
   processManager: ProcessManager,
+  ops: ToolOperations = localOperations,
 ): AgentTool<typeof BashParams> {
   return {
     name: "bash",
@@ -109,7 +110,7 @@ export function createBashTool(
       const effectiveTimeout = timeoutMs ?? DEFAULT_TIMEOUT;
 
       return new Promise<string>((resolve) => {
-        const child = spawn("bash", ["-c", command], {
+        const child = ops.spawn("bash", ["-c", command], {
           cwd,
           detached: true,
           stdio: ["ignore", "pipe", "pipe"],

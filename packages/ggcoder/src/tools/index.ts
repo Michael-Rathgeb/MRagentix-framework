@@ -12,12 +12,15 @@ import { createWebFetchTool } from "./web-fetch.js";
 import { createTaskOutputTool } from "./task-output.js";
 import { createTaskStopTool } from "./task-stop.js";
 import { createTasksTool } from "./tasks.js";
+import { localOperations, type ToolOperations } from "./operations.js";
 import type { AgentDefinition } from "../core/agents.js";
 
 export interface CreateToolsOptions {
   agents?: AgentDefinition[];
   provider?: string;
   model?: string;
+  /** Custom I/O operations for remote execution (SSH, Docker, etc.). Defaults to local filesystem. */
+  operations?: ToolOperations;
 }
 
 export interface CreateToolsResult {
@@ -28,15 +31,16 @@ export interface CreateToolsResult {
 export function createTools(cwd: string, opts?: CreateToolsOptions): CreateToolsResult {
   const readFiles = new Set<string>();
   const processManager = new ProcessManager();
+  const ops = opts?.operations ?? localOperations;
 
   const tools: AgentTool[] = [
-    createReadTool(cwd, readFiles),
-    createWriteTool(cwd, readFiles),
-    createEditTool(cwd, readFiles),
-    createBashTool(cwd, processManager),
+    createReadTool(cwd, readFiles, ops),
+    createWriteTool(cwd, readFiles, ops),
+    createEditTool(cwd, readFiles, ops),
+    createBashTool(cwd, processManager, ops),
     createFindTool(cwd),
-    createGrepTool(cwd),
-    createLsTool(cwd),
+    createGrepTool(cwd, ops),
+    createLsTool(cwd, ops),
     createWebFetchTool(),
     createTaskOutputTool(processManager),
     createTaskStopTool(processManager),
@@ -62,3 +66,4 @@ export { createTaskOutputTool } from "./task-output.js";
 export { createTaskStopTool } from "./task-stop.js";
 export { createTasksTool } from "./tasks.js";
 export { ProcessManager } from "../core/process-manager.js";
+export { localOperations, type ToolOperations } from "./operations.js";

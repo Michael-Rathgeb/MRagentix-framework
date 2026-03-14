@@ -11,6 +11,8 @@ import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
 import { renderApp } from "./ui/render.js";
 import { runJsonMode } from "./modes/json-mode.js";
+import { runRpcMode } from "./modes/rpc-mode.js";
+import { runServeMode } from "./modes/serve-mode.js";
 import { renderLoginSelector } from "./ui/login.js";
 import { renderSessionSelector } from "./ui/sessions.js";
 import type { CompletedItem } from "./ui/App.js";
@@ -23,6 +25,7 @@ import { initLogger, log, closeLogger } from "./core/logger.js";
 import { buildSystemPrompt } from "./system-prompt.js";
 import { createTools } from "./tools/index.js";
 import { shouldCompact, compact } from "./core/compaction/compactor.js";
+import { setEstimatorModel } from "./core/compaction/token-estimator.js";
 import { getContextWindow } from "./core/model-registry.js";
 import { MCPClientManager, getMCPServers } from "./core/mcp/index.js";
 import { discoverAgents } from "./core/agents.js";
@@ -76,6 +79,27 @@ function main(): void {
     return;
   }
 
+  if (subcommand === "telegram") {
+    runTelegramSetup().catch((err) => {
+      log("ERROR", "fatal", err instanceof Error ? err.message : String(err));
+      closeLogger();
+      process.stderr.write(formatUserError(err) + "\n");
+      process.exit(1);
+    });
+    return;
+  }
+
+  if (subcommand === "serve") {
+    process.argv.splice(2, 1);
+    runServe().catch((err) => {
+      log("ERROR", "fatal", err instanceof Error ? err.message : String(err));
+      closeLogger();
+      process.stderr.write(formatUserError(err) + "\n");
+      process.exit(1);
+    });
+    return;
+  }
+
   if (subcommand === "continue") {
     // Remove "continue" so parseArgs handles remaining flags
     process.argv.splice(2, 1);
@@ -85,6 +109,7 @@ function main(): void {
     options: {
       version: { type: "boolean", short: "v" },
       json: { type: "boolean" },
+      rpc: { type: "boolean" },
       provider: { type: "string" },
       model: { type: "string" },
       "max-turns": { type: "string" },
@@ -114,6 +139,24 @@ function main(): void {
       cwd,
       systemPrompt,
       maxTurns,
+    }).catch((err: unknown) => {
+      process.stderr.write(formatUserError(err) + "\n");
+      process.exit(1);
+    });
+    return;
+  }
+
+  // RPC mode — headless JSON-over-stdio for IDE integrations
+  if (values.rpc) {
+    const rpcProvider = (values.provider ?? "anthropic") as Provider;
+    const rpcModel = values.model ?? "claude-opus-4-6";
+    const systemPrompt = values["system-prompt"];
+    const cwd = process.cwd();
+    runRpcMode({
+      provider: rpcProvider,
+      model: rpcModel,
+      cwd,
+      systemPrompt,
     }).catch((err: unknown) => {
       process.stderr.write(formatUserError(err) + "\n");
       process.exit(1);
@@ -180,6 +223,9 @@ async function runInkTUI(opts: {
   theme?: "auto" | "dark" | "light";
 }): Promise<void> {
   const { provider, model, cwd } = opts;
+
+  // Set model for token estimation accuracy
+  setEstimatorModel(model);
 
   // Resolve auth
   const paths = await ensureAppDirs();
@@ -341,6 +387,7 @@ async function runInkTUI(opts: {
 // ── Login ──────────────────────────────────────────────────
 
 async function runLogin(): Promise<void> {
+  process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
   const paths = await ensureAppDirs();
   initLogger(paths.logFile, { version: CLI_VERSION });
   log("INFO", "auth", "Login flow started");
@@ -428,6 +475,7 @@ async function runLogout(): Promise<void> {
 // ── Sessions ──────────────────────────────────────────────
 
 async function runSessions(): Promise<void> {
+  process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
   const paths = await ensureAppDirs();
   initLogger(paths.logFile, { version: CLI_VERSION });
   log("INFO", "session", "Sessions selector started");
@@ -478,6 +526,223 @@ async function runSessions(): Promise<void> {
     thinkingLevel,
     resumeSessionPath: selectedPath,
     theme: savedTheme,
+  });
+}
+
+// ── Telegram Setup ───────────────────────────────────────
+
+interface TelegramConfig {
+  botToken: string;
+  userId: number;
+}
+
+async function loadTelegramConfig(): Promise<TelegramConfig | null> {
+  try {
+    const raw = await fs.promises.readFile(getAppPaths().telegramFile, "utf-8");
+    const data = JSON.parse(raw) as TelegramConfig;
+    if (data.botToken && data.userId) return data;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function saveTelegramConfig(config: TelegramConfig): Promise<void> {
+  const paths = await ensureAppDirs();
+  await fs.promises.writeFile(paths.telegramFile, JSON.stringify(config, null, 2), {
+    encoding: "utf-8",
+    mode: 0o600,
+  });
+}
+
+async function runTelegramSetup(): Promise<void> {
+  process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+  const paths = await ensureAppDirs();
+  initLogger(paths.logFile, { version: CLI_VERSION });
+  log("INFO", "telegram", "Telegram setup started");
+
+  const existing = await loadTelegramConfig();
+
+  console.log(chalk.hex("#60a5fa").bold("\n  Telegram Remote Control Setup\n"));
+
+  if (existing) {
+    console.log(
+      chalk.hex("#6b7280")("  Current config:\n") +
+        chalk.hex("#6b7280")(
+          `    Bot token: ${existing.botToken.slice(0, 10)}...${existing.botToken.slice(-4)}\n`,
+        ) +
+        chalk.hex("#6b7280")(`    User ID:   ${existing.userId}\n`),
+    );
+  }
+
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+
+  try {
+    // Step 1: Bot token
+    console.log(
+      chalk.hex("#a78bfa")("  Step 1: Bot Token\n") +
+        chalk.hex("#6b7280")("    1. Open BotFather: ") +
+        chalk.hex("#60a5fa").underline("https://t.me/BotFather") +
+        "\n" +
+        chalk.hex("#6b7280")("    2. Send /newbot and follow the prompts\n") +
+        chalk.hex("#6b7280")("    3. Copy the bot token\n"),
+    );
+
+    const tokenPrompt = existing
+      ? chalk.hex("#60a5fa")("  Paste bot token (enter to keep current): ")
+      : chalk.hex("#60a5fa")("  Paste bot token: ");
+    const tokenInput = await rl.question(tokenPrompt);
+    const botToken = tokenInput.trim() || existing?.botToken;
+
+    if (!botToken) {
+      console.log(chalk.hex("#ef4444")("\n  No bot token provided. Setup cancelled."));
+      return;
+    }
+
+    // Validate token format (roughly: digits:alphanumeric)
+    if (!/^\d+:[A-Za-z0-9_-]+$/.test(botToken)) {
+      console.log(chalk.hex("#ef4444")("\n  Invalid token format. Expected: 123456789:ABCdef..."));
+      return;
+    }
+
+    // Step 2: User ID
+    console.log(
+      chalk.hex("#a78bfa")("\n  Step 2: User ID\n") +
+        chalk.hex("#6b7280")("    1. Open userinfobot: ") +
+        chalk.hex("#60a5fa").underline("https://t.me/userinfobot") +
+        "\n" +
+        chalk.hex("#6b7280")("    2. Send any message — it replies with your numeric ID\n") +
+        chalk.hex("#6b7280")("    Only this user ID can control the bot.\n"),
+    );
+
+    const userPrompt = existing
+      ? chalk.hex("#60a5fa")(`  Your Telegram user ID (enter to keep ${existing.userId}): `)
+      : chalk.hex("#60a5fa")("  Your Telegram user ID: ");
+    const userInput = await rl.question(userPrompt);
+    const userId = userInput.trim() ? parseInt(userInput.trim(), 10) : existing?.userId;
+
+    if (!userId || isNaN(userId)) {
+      console.log(chalk.hex("#ef4444")("\n  Invalid user ID. Must be a number."));
+      return;
+    }
+
+    // Step 3: Verify bot token by calling getMe
+    console.log(chalk.hex("#6b7280")("\n  Verifying bot token..."));
+
+    const verifyRes = await fetch(`https://api.telegram.org/bot${botToken}/getMe`, {
+      method: "POST",
+    });
+    const verifyData = (await verifyRes.json()) as {
+      ok: boolean;
+      result?: { username: string; first_name: string };
+    };
+
+    if (!verifyData.ok || !verifyData.result) {
+      console.log(
+        chalk.hex("#ef4444")("\n  Invalid bot token — Telegram rejected it. Check and try again."),
+      );
+      return;
+    }
+
+    const botName = verifyData.result.first_name;
+    const botUsername = verifyData.result.username;
+
+    // Save config
+    await saveTelegramConfig({ botToken, userId });
+
+    log("INFO", "telegram", `Telegram setup complete: @${botUsername} (user ${userId})`);
+
+    console.log(
+      chalk.hex("#4ade80")(`\n  ✓ Connected to @${botUsername} (${botName})\n`) +
+        chalk.hex("#4ade80")(`  ✓ Authorized user ID: ${userId}\n`) +
+        chalk.hex("#4ade80")(`  ✓ Config saved to ${paths.telegramFile}\n\n`) +
+        chalk.hex("#a78bfa")("  For group chats:\n") +
+        chalk.hex("#6b7280")(
+          "    1. Message @BotFather → /setprivacy → select your bot → Disable\n",
+        ) +
+        chalk.hex("#6b7280")("    2. Add the bot to your group\n") +
+        chalk.hex("#6b7280")("    3. Send /link in the group to connect it to a project\n\n") +
+        chalk.hex("#60a5fa")("  To start:\n") +
+        chalk.hex("#6b7280")("    cd your-project && ggcoder serve\n"),
+    );
+  } finally {
+    rl.close();
+    closeLogger();
+  }
+}
+
+// ── Serve (Telegram) ─────────────────────────────────────
+
+async function runServe(): Promise<void> {
+  const { values: serveValues } = parseArgs({
+    options: {
+      "bot-token": { type: "string" },
+      "user-id": { type: "string" },
+      provider: { type: "string" },
+      model: { type: "string" },
+    },
+    strict: true,
+  });
+
+  // Priority: CLI flags > env vars > saved config
+  const saved = await loadTelegramConfig();
+  const botToken = serveValues["bot-token"] ?? process.env.GG_TELEGRAM_BOT_TOKEN ?? saved?.botToken;
+  const userIdStr = serveValues["user-id"] ?? process.env.GG_TELEGRAM_USER_ID;
+  const userId = userIdStr ? parseInt(userIdStr, 10) : saved?.userId;
+
+  if (!botToken || !userId || isNaN(userId)) {
+    console.error(
+      chalk.hex("#ef4444")("Telegram not configured.\n\n") +
+        "Run " +
+        chalk.hex("#60a5fa").bold("ggcoder telegram") +
+        " to set up your bot token and user ID.\n\n" +
+        chalk.hex("#6b7280")("Or provide manually:\n") +
+        chalk.hex("#6b7280")("  ggcoder serve --bot-token TOKEN --user-id ID"),
+    );
+    process.exit(1);
+  }
+
+  // Load saved settings
+  let savedProvider: "anthropic" | "openai" | "glm" | "moonshot" | undefined;
+  let savedModel: string | undefined;
+  let savedThinkingEnabled = false;
+  try {
+    const raw = JSON.parse(fs.readFileSync(getAppPaths().settingsFile, "utf-8"));
+    if (raw.defaultProvider) savedProvider = raw.defaultProvider;
+    if (raw.defaultModel) savedModel = raw.defaultModel;
+    if (raw.thinkingEnabled === true) savedThinkingEnabled = true;
+  } catch {
+    // No settings file
+  }
+
+  const provider: Provider =
+    (serveValues.provider as Provider | undefined) ?? savedProvider ?? "anthropic";
+
+  function getDefault(p: string): string {
+    if (p === "openai") return "gpt-5.3-codex";
+    if (p === "glm") return "glm-5";
+    if (p === "moonshot") return "kimi-k2.5";
+    return "claude-opus-4-6";
+  }
+
+  const model = serveValues.model ?? savedModel ?? getDefault(provider);
+  const thinkingLevel: ThinkingLevel | undefined = savedThinkingEnabled ? "medium" : undefined;
+
+  const paths = await ensureAppDirs();
+  initLogger(paths.logFile, {
+    version: CLI_VERSION,
+    provider,
+    model,
+  });
+
+  setEstimatorModel(model);
+
+  await runServeMode({
+    provider,
+    model,
+    cwd: process.cwd(),
+    thinkingLevel,
+    telegram: { botToken, userId },
   });
 }
 

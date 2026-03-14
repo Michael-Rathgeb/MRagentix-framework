@@ -1,8 +1,10 @@
 import fs from "node:fs/promises";
+import crypto from "node:crypto";
 import { getAppPaths } from "../config.js";
 import type { OAuthCredentials } from "./oauth/types.js";
 import { refreshAnthropicToken } from "./oauth/anthropic.js";
 import { refreshOpenAIToken } from "./oauth/openai.js";
+import { withFileLock } from "./file-lock.js";
 
 type AuthData = Record<string, OAuthCredentials>;
 
@@ -18,12 +20,14 @@ export class AuthStorage {
   }
 
   async load(): Promise<void> {
-    try {
-      const content = await fs.readFile(this.filePath, "utf-8");
-      this.data = JSON.parse(content) as AuthData;
-    } catch {
-      this.data = {};
-    }
+    await withFileLock(this.filePath, async () => {
+      try {
+        const content = await fs.readFile(this.filePath, "utf-8");
+        this.data = JSON.parse(content) as AuthData;
+      } catch {
+        this.data = {};
+      }
+    });
     this.loaded = true;
   }
 
@@ -83,16 +87,31 @@ export class AuthStorage {
     const existing = this.refreshLocks.get(provider);
     if (existing) return existing;
 
-    const refreshPromise = (async () => {
+    const refreshPromise = withFileLock(this.filePath, async () => {
+      // Re-read from disk in case another process refreshed while we waited for the lock
+      try {
+        const content = await fs.readFile(this.filePath, "utf-8");
+        const freshData = JSON.parse(content) as AuthData;
+        const freshCreds = freshData[provider];
+        if (freshCreds && !opts?.forceRefresh && Date.now() < freshCreds.expiresAt) {
+          // Another process already refreshed — use their token
+          this.data[provider] = freshCreds;
+          return freshCreds;
+        }
+      } catch {
+        // Fall through to refresh
+      }
+
       const refreshFn = provider === "anthropic" ? refreshAnthropicToken : refreshOpenAIToken;
       const refreshed = await refreshFn(creds.refreshToken);
       if (!refreshed.accountId && creds.accountId) {
         refreshed.accountId = creds.accountId;
       }
       this.data[provider] = refreshed;
-      await this.save();
+      // Write atomically (we already hold the file lock)
+      await atomicWriteFile(this.filePath, JSON.stringify(this.data, null, 2));
       return refreshed;
-    })();
+    });
 
     this.refreshLocks.set(provider, refreshPromise);
     try {
@@ -112,8 +131,24 @@ export class AuthStorage {
   }
 
   private async save(): Promise<void> {
-    const content = JSON.stringify(this.data, null, 2);
-    await fs.writeFile(this.filePath, content, { encoding: "utf-8", mode: 0o600 });
+    await withFileLock(this.filePath, async () => {
+      await atomicWriteFile(this.filePath, JSON.stringify(this.data, null, 2));
+    });
+  }
+}
+
+/**
+ * Atomic file write using temp file + rename pattern.
+ * Prevents partial/corrupt data if the process crashes mid-write.
+ */
+async function atomicWriteFile(filePath: string, content: string): Promise<void> {
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${crypto.randomUUID().slice(0, 8)}.tmp`;
+  try {
+    await fs.writeFile(tmpPath, content, { encoding: "utf-8", mode: 0o600 });
+    await fs.rename(tmpPath, filePath);
+  } catch (err) {
+    await fs.unlink(tmpPath).catch(() => {});
+    throw err;
   }
 }
 

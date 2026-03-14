@@ -89,6 +89,19 @@ export interface SessionInfo {
   messageCount: number;
 }
 
+// ── Branch Info ───────────────────────────────────────────
+
+export interface BranchInfo {
+  /** The entry ID where this branch diverges from its parent branch */
+  branchPointId: string;
+  /** The leaf (tip) entry ID of this branch */
+  leafId: string;
+  /** Number of entries in this branch after the branch point */
+  entryCount: number;
+  /** Timestamp of the first entry in the branch */
+  timestamp: string;
+}
+
 // ── Session Manager ────────────────────────────────────────
 
 function encodeCwd(cwd: string): string {
@@ -258,8 +271,13 @@ export class SessionManager {
     }
   }
 
-  getMessages(entries: SessionEntry[]): Message[] {
-    const messages = entries
+  /**
+   * Get messages for the current branch. If leafId is set, walks the
+   * DAG from leaf to root. Otherwise returns all entries linearly.
+   */
+  getMessages(entries: SessionEntry[], leafId?: string | null): Message[] {
+    const branch = leafId ? this.getBranch(entries, leafId) : entries;
+    const messages = branch
       .filter((e): e is MessageEntry => e.type === "message")
       .map((e) => e.message)
       .filter((m) => m.role !== "system");
@@ -328,6 +346,11 @@ export class SessionManager {
     return repaired;
   }
 
+  /**
+   * Walk the DAG from a leaf entry back to the root, returning entries
+   * in chronological order (root → leaf). This is the "branch" — the
+   * path through the conversation tree that leads to the given leaf.
+   */
   getBranch(entries: SessionEntry[], leafId: string | null): SessionEntry[] {
     if (!leafId) return entries;
 
@@ -343,5 +366,44 @@ export class SessionManager {
     }
 
     return branch.reverse();
+  }
+
+  /**
+   * List all branches (leaf nodes) in a session's entry DAG.
+   * A leaf is any entry whose id is not referenced as a parentId by any other entry.
+   */
+  listBranches(entries: SessionEntry[]): BranchInfo[] {
+    if (entries.length === 0) return [];
+
+    // Find all ids that are referenced as parentId
+    const parentIds = new Set(entries.map((e) => e.parentId).filter(Boolean));
+
+    // Leaves = entries whose id is NOT in parentIds
+    const leaves = entries.filter((e) => !parentIds.has(e.id));
+
+    return leaves.map((leaf) => {
+      const branch = this.getBranch(entries, leaf.id);
+      // Find branch point: walk up from leaf until we find an entry
+      // that has multiple children (or the root)
+      const childCount = new Map<string | null, number>();
+      for (const e of entries) {
+        childCount.set(e.parentId, (childCount.get(e.parentId) ?? 0) + 1);
+      }
+
+      let branchPointId = branch[0]?.id ?? leaf.id;
+      for (const e of branch) {
+        if ((childCount.get(e.parentId) ?? 0) > 1) {
+          branchPointId = e.id;
+          break;
+        }
+      }
+
+      return {
+        branchPointId,
+        leafId: leaf.id,
+        entryCount: branch.length,
+        timestamp: branch[0]?.timestamp ?? leaf.timestamp,
+      };
+    });
   }
 }

@@ -4,15 +4,56 @@ import { StreamResult } from "./utils/event-stream.js";
 import { streamAnthropic } from "./providers/anthropic.js";
 import { streamOpenAI } from "./providers/openai.js";
 import { streamOpenAICodex } from "./providers/openai-codex.js";
+import { providerRegistry } from "./provider-registry.js";
 
 /** Z.AI has two API systems — Coding Plan (subscription) and regular (pay-per-token). */
 const GLM_CODING_BASE_URL = "https://api.z.ai/api/coding/paas/v4";
 const GLM_REGULAR_BASE_URL = "https://api.z.ai/api/paas/v4";
 
+// ── Register built-in providers ────────────────────────────
+
+providerRegistry.register("anthropic", {
+  stream: (options) => streamAnthropic(options),
+});
+
+providerRegistry.register("openai", {
+  stream: (options) => {
+    // Use codex endpoint for OAuth tokens (have accountId)
+    if (options.accountId) {
+      return streamOpenAICodex(options);
+    }
+    return streamOpenAI(options);
+  },
+});
+
+providerRegistry.register("glm", {
+  stream: (options) => {
+    // If user set an explicit baseUrl, use it directly — no fallback
+    if (options.baseUrl) {
+      return streamOpenAI(options);
+    }
+    return streamGLMWithFallback(options);
+  },
+});
+
+providerRegistry.register("moonshot", {
+  stream: (options) =>
+    streamOpenAI({
+      ...options,
+      baseUrl: options.baseUrl ?? "https://api.moonshot.ai/v1",
+    }),
+});
+
+// ── Public API ─────────────────────────────────────────────
+
 /**
  * Unified streaming entry point. Returns a StreamResult that is both
  * an async iterable (for streaming events) and thenable (await for
  * the final response).
+ *
+ * Providers are resolved via the provider registry. Built-in providers
+ * (anthropic, openai, glm, moonshot) are registered at module load.
+ * Extensions can register custom providers via `providerRegistry.register()`.
  *
  * ```ts
  * // Stream events
@@ -25,32 +66,16 @@ const GLM_REGULAR_BASE_URL = "https://api.z.ai/api/paas/v4";
  * ```
  */
 export function stream(options: StreamOptions): StreamResult {
-  switch (options.provider) {
-    case "anthropic":
-      return streamAnthropic(options);
-    case "openai":
-      // Use codex endpoint for OAuth tokens (have accountId)
-      if (options.accountId) {
-        return streamOpenAICodex(options);
-      }
-      return streamOpenAI(options);
-    case "glm":
-      // If user set an explicit baseUrl, use it directly — no fallback
-      if (options.baseUrl) {
-        return streamOpenAI(options);
-      }
-      return streamGLMWithFallback(options);
-    case "moonshot":
-      return streamOpenAI({
-        ...options,
-        baseUrl: options.baseUrl ?? "https://api.moonshot.ai/v1",
-      });
-    default:
-      throw new GGAIError(
-        `Unknown provider: ${options.provider as string}. Supported: "anthropic", "openai", "glm", "moonshot"`,
-      );
+  const entry = providerRegistry.get(options.provider);
+  if (!entry) {
+    throw new GGAIError(
+      `Unknown provider: "${options.provider}". Registered: ${providerRegistry.list().join(", ")}`,
+    );
   }
+  return entry.stream(options);
 }
+
+// ── GLM fallback logic ────────────────────────────────────
 
 /**
  * Try the Coding Plan endpoint first; if it fails with a 404 / model-not-found
