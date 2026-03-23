@@ -5,7 +5,7 @@ import crypto from "node:crypto";
 import type { Message } from "@kenkaiiii/gg-ai";
 import type { SessionHeader, SessionMessageEntry, SessionEntry, SessionInfo } from "./types.js";
 
-const SESSION_DIR = path.join(os.homedir(), ".gg", "sessions");
+const SESSION_DIR = path.join(os.homedir(), ".mragentix", "sessions");
 
 function encodeCwd(cwd: string): string {
   return cwd.replace(/[\\/]/g, "_").replace(/:/g, "").replace(/^_/, "");

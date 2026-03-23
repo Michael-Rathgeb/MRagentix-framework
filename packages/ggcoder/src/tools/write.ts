@@ -1,3 +1,5 @@
+import path from "node:path";
+import fs from "node:fs/promises";
 import { z } from "zod";
 import type { AgentTool } from "@kenkaiiii/gg-agent";
 import { resolvePath, rejectSymlink } from "./path-utils.js";
@@ -12,6 +14,7 @@ export function createWriteTool(
   cwd: string,
   readFiles?: Set<string>,
   ops: ToolOperations = localOperations,
+  planModeRef?: { current: boolean },
 ): AgentTool<typeof WriteParams> {
   return {
     name: "write",
@@ -22,6 +25,19 @@ export function createWriteTool(
     async execute({ file_path, content }) {
       const resolved = resolvePath(cwd, file_path);
       await rejectSymlink(resolved);
+
+      // In plan mode, only allow writing to .mragentix/plans/
+      if (planModeRef?.current) {
+        const plansDir = path.join(cwd, ".mragentix", "plans");
+        if (!resolved.startsWith(plansDir)) {
+          return (
+            "Error: write is restricted in plan mode. You can only write to .mragentix/plans/. Got: " +
+            file_path
+          );
+        }
+        // Ensure .mragentix/plans/ directory exists
+        await fs.mkdir(plansDir, { recursive: true });
+      }
 
       // Block overwriting existing files that haven't been read
       if (readFiles && !readFiles.has(resolved)) {

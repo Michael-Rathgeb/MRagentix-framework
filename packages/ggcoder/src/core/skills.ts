@@ -63,13 +63,13 @@ export async function discoverSkills(options: {
   const bundledSkills = await loadSkillsFromDir(bundledDir, "bundled");
   for (const s of bundledSkills) skillMap.set(s.name, s);
 
-  // 2. Global skills: ~/.gg/skills/*.md (override bundled)
+  // 2. Global skills: ~/.mragentix/skills/*.md (override bundled)
   const globalSkills = await loadSkillsFromDir(options.globalSkillsDir, "global");
   for (const s of globalSkills) skillMap.set(s.name, s);
 
-  // 3. Project skills: {cwd}/.gg/skills/*.md (override global)
+  // 3. Project skills: {cwd}/.mragentix/skills/*.md (override global)
   if (options.projectDir) {
-    const projectSkillsDir = path.join(options.projectDir, ".gg", "skills");
+    const projectSkillsDir = path.join(options.projectDir, ".mragentix", "skills");
     const projectSkills = await loadSkillsFromDir(projectSkillsDir, "project");
     for (const s of projectSkills) skillMap.set(s.name, s);
   }
@@ -137,17 +137,19 @@ export function parseSkillFile(raw: string, source: string): Skill {
 }
 
 /**
- * Format skills into a system prompt section.
+ * Format skills as a summary list for the system prompt.
+ * Only includes names and descriptions — full content is loaded on-demand via the skill tool.
  */
 export function formatSkillsForPrompt(skills: Skill[]): string {
   if (skills.length === 0) return "";
 
-  const parts = ["## Skills\n"];
-  for (const skill of skills) {
-    parts.push(`### ${skill.name}${skill.description ? ` — ${skill.description}` : ""}`);
-    parts.push(skill.content);
-    parts.push("");
-  }
+  const list = skills
+    .map((s) => `- **${s.name}**${s.description ? `: ${s.description}` : ""}`)
+    .join("\n");
 
-  return parts.join("\n");
+  return (
+    `## Skills\n\n` +
+    `The following skills are available. Use the **skill** tool to invoke a skill when needed:\n\n` +
+    list
+  );
 }

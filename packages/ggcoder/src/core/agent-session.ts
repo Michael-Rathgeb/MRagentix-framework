@@ -1,4 +1,4 @@
-import { agentLoop, type AgentEvent, type AgentTool } from "@kenkaiiii/gg-agent";
+import { agentLoop, isAbortError, type AgentEvent, type AgentTool } from "@kenkaiiii/gg-agent";
 import { ProviderError, type Message, type Provider, type ThinkingLevel } from "@kenkaiiii/gg-ai";
 import { EventBus } from "./event-bus.js";
 import {
@@ -24,6 +24,8 @@ import { log } from "./logger.js";
 import { setEstimatorModel } from "./compaction/token-estimator.js";
 import { discoverAgents } from "./agents.js";
 import crypto from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
 
 // ── Options ────────────────────────────────────────────────
 
@@ -111,6 +113,12 @@ export class AgentSession {
     // Session manager
     this.sessionManager = new SessionManager(paths.sessionsDir);
 
+    // Ensure project-local .gg directories exist
+    const localGGDir = path.join(this.cwd, ".mragentix");
+    await fs.mkdir(path.join(localGGDir, "skills"), { recursive: true });
+    await fs.mkdir(path.join(localGGDir, "commands"), { recursive: true });
+    await fs.mkdir(path.join(localGGDir, "agents"), { recursive: true });
+
     // Discover skills
     this.skills = await discoverSkills({
       globalSkillsDir: paths.skillsDir,
@@ -128,6 +136,7 @@ export class AgentSession {
     });
     const { tools, processManager } = createTools(this.cwd, {
       agents,
+      skills: this.skills,
       provider: this.provider,
       model: this.model,
     });
@@ -199,7 +208,7 @@ export class AgentSession {
           }
         }
 
-        // Add custom commands from .gg/commands/
+        // Add custom commands from .mragentix/commands/
         const customCmds = await loadCustomCommands(cwd);
         if (customCmds.length > 0) {
           lines.push("");
@@ -311,6 +320,10 @@ export class AgentSession {
     try {
       await runAgentLoop(creds.accessToken, creds.accountId);
     } catch (err) {
+      // Abort errors are expected (user cancellation) — don't retry or re-throw
+      if (isAbortError(err) || this.opts.signal?.aborted) {
+        return;
+      }
       if (err instanceof ProviderError && err.statusCode === 401) {
         log("INFO", "auth", "Got 401, force-refreshing token and retrying");
         creds = await this.authStorage.resolveCredentials(this.provider, { forceRefresh: true });
@@ -381,7 +394,7 @@ export class AgentSession {
 
     this.messages = result.messages;
 
-    // Persist compacted messages to a new session file so `ggcoder continue`
+    // Persist compacted messages to a new session file so `mragentix continue`
     // picks up the compacted state instead of the full original history.
     const session = await this.sessionManager.create(this.cwd, this.provider, this.model);
     this.sessionId = session.id;

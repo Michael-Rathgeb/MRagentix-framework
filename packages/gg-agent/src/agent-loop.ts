@@ -21,6 +21,17 @@ import type {
 const DEFAULT_MAX_TURNS = 100;
 
 /**
+ * Detect abort errors — user-initiated cancellation or AbortSignal.
+ * These should be caught and handled gracefully, not re-thrown.
+ */
+export function isAbortError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (err.name === "AbortError") return true;
+  const msg = err.message.toLowerCase();
+  return msg.includes("aborted") || msg.includes("abort");
+}
+
+/**
  * Detect context window overflow errors from LLM providers.
  * Anthropic: "prompt is too long: N tokens > M maximum"
  * OpenAI:    "context_length_exceeded" / "maximum context length"
@@ -174,6 +185,11 @@ export async function* agentLoop(
           turn--; // Don't count the failed turn
           continue;
         }
+        // Abort errors (user cancellation) — exit loop cleanly instead of
+        // crashing the process with an unhandled rejection.
+        if (isAbortError(err) || options.signal?.aborted) {
+          break;
+        }
         throw err;
       }
 
@@ -233,10 +249,22 @@ export async function* agentLoop(
       // Extract tool calls — separate client-executed from provider built-in (e.g. Moonshot $web_search)
       const allToolCalls = extractToolCalls(response.message.content);
 
-      // If no tool calls to execute, we're done.
+      // If no tool calls to execute, check for steering messages before stopping.
       // Check content (not just stopReason) because some providers (e.g. GLM)
       // return finish_reason="stop" even when tool calls are present.
       if (response.stopReason !== "tool_use" && allToolCalls.length === 0) {
+        // Check for queued steering messages — if present, inject and continue
+        // the loop instead of returning (follow-up pattern).
+        if (options.getSteeringMessages) {
+          const steering = await options.getSteeringMessages();
+          if (steering && steering.length > 0) {
+            for (const msg of steering) {
+              yield { type: "steering_message" as const, content: msg.content };
+              messages.push(msg);
+            }
+            continue; // Next iteration will call LLM with injected messages
+          }
+        }
         yield {
           type: "agent_done" as const,
           totalTurns: turn,
@@ -352,9 +380,18 @@ export async function* agentLoop(
         .catch((err) => eventStream.abort(err instanceof Error ? err : new Error(String(err))));
 
       // Yield events as they arrive from parallel tools
+      let toolsAborted = false;
       try {
         for await (const event of eventStream) {
           yield event;
+        }
+      } catch (err) {
+        // Tool event stream aborted (Ctrl+C) — don't propagate, just mark
+        // so the finally block can clean up and the loop can exit.
+        if (isAbortError(err) || options.signal?.aborted) {
+          toolsAborted = true;
+        } else {
+          throw err;
         }
       } finally {
         options.signal?.removeEventListener("abort", abortHandler);
@@ -379,6 +416,21 @@ export async function* agentLoop(
           }
         }
         messages.push({ role: "tool", content: toolResults });
+      }
+
+      // Exit loop after cleaning up aborted tools
+      if (toolsAborted) break;
+
+      // ── Steering messages: inject user messages queued during tool execution ──
+      // Polled after tools complete so the next LLM call sees them in context.
+      if (options.getSteeringMessages) {
+        const steering = await options.getSteeringMessages();
+        if (steering && steering.length > 0) {
+          for (const msg of steering) {
+            yield { type: "steering_message" as const, content: msg.content };
+            messages.push(msg);
+          }
+        }
       }
     }
   } finally {

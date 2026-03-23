@@ -26,7 +26,7 @@ interface InstallInfo {
 }
 
 function getStateFilePath(): string {
-  return path.join(os.homedir(), ".gg", "update-state.json");
+  return path.join(os.homedir(), ".mragentix", "update-state.json");
 }
 
 function readState(): UpdateState | null {

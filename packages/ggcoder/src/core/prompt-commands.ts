@@ -256,7 +256,7 @@ Only install what's missing. Use the detected package manager.
 
 ## Step 4: Generate /fix Command
 
-Create the directory \`.gg/commands/\` if it doesn't exist, then write \`.gg/commands/fix.md\`:
+Create the directory \`.mragentix/commands/\` if it doesn't exist, then write \`.mragentix/commands/fix.md\`:
 
 \`\`\`markdown
 ---
@@ -308,7 +308,7 @@ Check for config files and extract the lint/typecheck commands:
 
 ## Step 2: Generate /commit Command
 
-Create the directory \`.gg/commands/\` if it doesn't exist, then write \`.gg/commands/commit.md\`:
+Create the directory \`.mragentix/commands/\` if it doesn't exist, then write \`.mragentix/commands/commit.md\`:
 
 \`\`\`markdown
 ---
@@ -378,7 +378,7 @@ Each agent should create COMPREHENSIVE tests covering all critical code paths - 
 
 Run the tests to verify everything works. Fix any issues.
 
-Then create the directory \`.gg/commands/\` if it doesn't exist and write \`.gg/commands/test.md\` with:
+Then create the directory \`.mragentix/commands/\` if it doesn't exist and write \`.mragentix/commands/test.md\` with:
 
 \`\`\`markdown
 ---
@@ -426,7 +426,7 @@ Check for config files and lock files:
 
 ## Step 2: Generate /update Command
 
-Create the directory \`.gg/commands/\` if it doesn't exist, then write \`.gg/commands/update.md\`:
+Create the directory \`.mragentix/commands/\` if it doesn't exist, then write \`.mragentix/commands/update.md\`:
 
 \`\`\`markdown
 ---

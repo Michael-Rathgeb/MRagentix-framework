@@ -2,7 +2,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { Provider, ThinkingLevel } from "@kenkaiiii/gg-ai";
 import { AgentSession } from "../core/agent-session.js";
-import { TelegramBot, type TelegramMessage } from "../core/telegram.js";
+import { isAbortError } from "@kenkaiiii/gg-agent";
+import { TelegramBot, type TelegramMessage, type TelegramVoiceMessage } from "../core/telegram.js";
+import { transcribeVoice, isModelLoaded, setProgressCallback } from "../core/voice-transcriber.js";
 import chalk from "chalk";
 import { formatUserError } from "../utils/error-handler.js";
 import { log, closeLogger } from "../core/logger.js";
@@ -25,7 +27,7 @@ export interface ServeModeOptions {
 }
 
 // ── Serve Config ───────────────────────────────────────────
-// Maps Telegram chatId → project path. Stored at ~/.gg/serve.json.
+// Maps Telegram chatId → project path. Stored at ~/.mragentix/serve.json.
 // DMs use chatId of the private chat. Groups use the group chatId.
 
 interface ServeConfig {
@@ -55,7 +57,7 @@ async function saveConfig(config: ServeConfig): Promise<void> {
 // ── Project Discovery ──────────────────────────────────────
 
 /**
- * Scan ~/.gg/sessions/ to find all project directories that have sessions.
+ * Scan ~/.mragentix/sessions/ to find all project directories that have sessions.
  * Returns decoded absolute paths sorted alphabetically.
  */
 async function discoverProjects(): Promise<string[]> {
@@ -98,7 +100,7 @@ interface ChatState {
 }
 
 /**
- * Serve mode: run ggcoder controlled via Telegram.
+ * Serve mode: run mragentix controlled via Telegram.
  *
  * - DMs to bot → default project (CWD where serve was started)
  * - Groups → linked projects via /link <path>
@@ -297,7 +299,7 @@ export async function runServeMode(options: ServeModeOptions): Promise<void> {
     const currentModel = state?.session.getState().model ?? options.model;
     const modelInfo = MODELS.find((m) => m.id === currentModel);
 
-    let text = `*ggcoder* — remote coding agent\n\n`;
+    let text = `*MR Agentix* — remote coding agent\n\n`;
     text += `Project: \`${path.basename(projectPath)}\`\n`;
     text += `Model: *${modelInfo?.name ?? currentModel}*\n\n`;
 
@@ -326,7 +328,7 @@ export async function runServeMode(options: ServeModeOptions): Promise<void> {
       }
     }
 
-    // Custom commands from .gg/commands/
+    // Custom commands from .mragentix/commands/
     const customCmds = await loadCustomCommands(projectPath);
     if (customCmds.length > 0) {
       text += `\n*Custom Commands*\n`;
@@ -363,7 +365,7 @@ export async function runServeMode(options: ServeModeOptions): Promise<void> {
     const groupName = chatTitle ?? "this group";
     await bot.send(
       chatId,
-      `*ggcoder* joined *${groupName}*\n\n` +
+      `*MR Agentix* joined *${groupName}*\n\n` +
         `Send /link to connect to a project\n` +
         `Send /help for all commands`,
     );
@@ -603,7 +605,7 @@ export async function runServeMode(options: ServeModeOptions): Promise<void> {
       return;
     }
 
-    // ── Forward to ggcoder slash commands ──
+    // ── Forward to mragentix slash commands ──
 
     if (!TELEGRAM_COMMANDS.has(cmd)) {
       const projectPath = resolveProjectPath(chatId);
@@ -612,7 +614,7 @@ export async function runServeMode(options: ServeModeOptions): Promise<void> {
       if (state.isProcessing) {
         await bot.send(
           chatId,
-          "ggcoder is still processing. Wait for the current task to finish, or send /cancel to interrupt.",
+          "mragentix is still processing. Wait for the current task to finish, or send /cancel to interrupt.",
         );
         return;
       }
@@ -626,7 +628,7 @@ export async function runServeMode(options: ServeModeOptions): Promise<void> {
         await state.session.prompt(text.trim());
         await flushText(state);
       } catch (err) {
-        if (err instanceof Error && err.name === "AbortError") {
+        if (isAbortError(err)) {
           await bot.send(chatId, "Cancelled.");
         } else {
           await bot.send(chatId, `Command failed: ${formatUserError(err)}`);
@@ -639,6 +641,61 @@ export async function runServeMode(options: ServeModeOptions): Promise<void> {
     }
   });
 
+  // ── Voice note handler ────────────────────────────────
+
+  bot.onVoice(async (msg: TelegramVoiceMessage) => {
+    const { chatId } = msg;
+
+    const state = chatStates.get(chatId);
+    if (state?.isProcessing) {
+      await bot.send(
+        chatId,
+        "mragentix is still processing. Wait for the current task to finish, or send /cancel to interrupt.",
+      );
+      return;
+    }
+
+    try {
+      if (!isModelLoaded()) {
+        await bot.send(
+          chatId,
+          "Setting up voice transcription — downloading Whisper model. This only happens once.",
+        );
+        setProgressCallback((info) => {
+          if (info.status === "progress" && info.progress !== undefined) {
+            const pct = Math.round(info.progress);
+            if (pct % 25 === 0 && pct > 0) {
+              bot.sendTyping(chatId).catch(() => {});
+            }
+          }
+        });
+      }
+      await bot.sendTyping(chatId);
+
+      const fileUrl = await bot.getFileUrl(msg.fileId);
+      const text = await transcribeVoice(fileUrl);
+
+      if (!text) {
+        await bot.send(chatId, "_Could not transcribe voice note._");
+        return;
+      }
+
+      // Show what was heard, then process as a prompt
+      await bot.send(chatId, `_Voice: "${text}"_`);
+      await handlePrompt(chatId, text);
+    } catch (err) {
+      log(
+        "ERROR",
+        "telegram",
+        `Voice transcription failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      await bot.send(
+        chatId,
+        `_Voice transcription failed: ${err instanceof Error ? err.message : String(err)}_`,
+      );
+    }
+  });
+
   // ── Prompt handler ──────────────────────────────────
 
   async function handlePrompt(chatId: number, text: string): Promise<void> {
@@ -648,7 +705,7 @@ export async function runServeMode(options: ServeModeOptions): Promise<void> {
     if (state.isProcessing) {
       await bot.send(
         chatId,
-        "ggcoder is still processing. Wait for the current task to finish, or send /cancel to interrupt.",
+        "mragentix is still processing. Wait for the current task to finish, or send /cancel to interrupt.",
       );
       return;
     }
@@ -661,7 +718,7 @@ export async function runServeMode(options: ServeModeOptions): Promise<void> {
     try {
       await state.session.prompt(text);
     } catch (err) {
-      if (err instanceof Error && err.name === "AbortError") {
+      if (isAbortError(err)) {
         await bot.send(chatId, "Cancelled.");
       } else {
         await bot.send(chatId, `Error: ${formatUserError(err)}`);
@@ -722,10 +779,10 @@ export async function runServeMode(options: ServeModeOptions): Promise<void> {
     console.log();
     console.log(
       `  ${gradientText(LOGO[0]!)}${GAP}` +
-        chalk.hex("#60a5fa").bold("GG Coder") +
+        chalk.hex("#60a5fa").bold("MR Agentix Coder") +
         chalk.hex("#6b7280")(` v${options.version}`) +
         chalk.hex("#6b7280")(" · By ") +
-        chalk.white.bold("Ken Kai"),
+        chalk.white.bold("Michael Rathgeb"),
     );
     console.log(`  ${gradientText(LOGO[1]!)}${GAP}` + chalk.hex("#a78bfa")(modelName));
     console.log(`  ${gradientText(LOGO[2]!)}${GAP}` + chalk.hex("#6b7280")(displayPath));

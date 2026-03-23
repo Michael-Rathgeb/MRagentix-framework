@@ -29,7 +29,7 @@ export interface ReadOutputResult {
   output: string;
 }
 
-const BG_DIR = path.join(os.homedir(), ".gg", "bg");
+const BG_DIR = path.join(os.homedir(), ".mragentix", "bg");
 
 export class ProcessManager {
   private processes = new Map<string, BackgroundProcess>();

@@ -56,10 +56,10 @@ function renderScreen(selectedIndex: number): string {
   lines.push(
     gradientLine(LOGO_LINES[0]!) +
       GAP +
-      chalk.hex(PRIMARY).bold("GG Coder") +
+      chalk.hex(PRIMARY).bold("MR Agentix Coder") +
       (_version ? chalk.hex(TEXT_DIM)(` v${_version}`) : "") +
       chalk.hex(TEXT_DIM)(" · By ") +
-      chalk.hex(TEXT).bold("Ken Kai"),
+      chalk.hex(TEXT).bold("Michael Rathgeb"),
   );
   lines.push(gradientLine(LOGO_LINES[1]!) + GAP + chalk.hex("#a78bfa")("Login"));
   lines.push(gradientLine(LOGO_LINES[2]!) + GAP + chalk.hex(TEXT_DIM)("Select a provider"));

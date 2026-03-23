@@ -10,12 +10,12 @@ export interface CustomCommand {
 }
 
 /**
- * Load custom slash commands from {cwd}/.gg/commands/*.md
+ * Load custom slash commands from {cwd}/.mragentix/commands/*.md
  * Each .md file becomes a slash command. Frontmatter provides name/description,
  * and the body becomes the prompt injected into the agent.
  */
 export async function loadCustomCommands(cwd: string): Promise<CustomCommand[]> {
-  const commandsDir = path.join(cwd, ".gg", "commands");
+  const commandsDir = path.join(cwd, ".mragentix", "commands");
   const commands: CustomCommand[] = [];
 
   let files: string[];
@@ -35,7 +35,7 @@ export async function loadCustomCommands(cwd: string): Promise<CustomCommand[]> 
       const name = parsed.name || path.basename(file, ".md");
       commands.push({
         name,
-        description: parsed.description || `Custom command from .gg/commands/${file}`,
+        description: parsed.description || `Custom command from .mragentix/commands/${file}`,
         prompt: parsed.content,
         filePath,
       });

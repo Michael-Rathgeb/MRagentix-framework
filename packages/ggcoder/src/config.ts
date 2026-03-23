@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import { seedDefaultSkills } from "./core/skills.js";
 import { seedDefaultAgents } from "./core/agents.js";
 
-export const APP_NAME = "ggcoder";
+export const APP_NAME = "mragentix";
 export const VERSION = "0.0.1";
 
 export interface AppPaths {
@@ -20,7 +20,7 @@ export interface AppPaths {
 }
 
 export function getAppPaths(): AppPaths {
-  const agentDir = path.join(os.homedir(), ".gg");
+  const agentDir = path.join(os.homedir(), ".mragentix");
   return {
     agentDir,
     sessionsDir: path.join(agentDir, "sessions"),

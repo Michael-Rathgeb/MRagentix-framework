@@ -64,13 +64,13 @@ export async function discoverAgents(options: {
   const bundledAgents = await loadAgentsFromDir(bundledDir, "bundled");
   for (const a of bundledAgents) agentMap.set(a.name, a);
 
-  // 2. Global agents: ~/.gg/agents/*.md (override bundled)
+  // 2. Global agents: ~/.mragentix/agents/*.md (override bundled)
   const globalAgents = await loadAgentsFromDir(options.globalAgentsDir, "global");
   for (const a of globalAgents) agentMap.set(a.name, a);
 
-  // 3. Project agents: {cwd}/.gg/agents/*.md (override global)
+  // 3. Project agents: {cwd}/.mragentix/agents/*.md (override global)
   if (options.projectDir) {
-    const projectAgentsDir = path.join(options.projectDir, ".gg", "agents");
+    const projectAgentsDir = path.join(options.projectDir, ".mragentix", "agents");
     const projectAgents = await loadAgentsFromDir(projectAgentsDir, "project");
     for (const a of projectAgents) agentMap.set(a.name, a);
   }

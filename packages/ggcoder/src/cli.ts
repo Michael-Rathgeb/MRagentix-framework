@@ -1,5 +1,20 @@
 #!/usr/bin/env node
 
+// Catch stray abort-related promise rejections that escape the normal error
+// handling chain (e.g. race conditions during Ctrl+C). Without this, Node.js
+// v25+ crashes the process on any unhandled rejection.
+process.on("unhandledRejection", (reason) => {
+  if (reason instanceof Error) {
+    const msg = reason.message.toLowerCase();
+    if (reason.name === "AbortError" || msg.includes("aborted") || msg.includes("abort")) {
+      // Silently swallow abort rejections — these are expected during cancellation
+      return;
+    }
+  }
+  // Re-throw non-abort rejections so they still crash with a useful stack trace
+  throw reason;
+});
+
 // Drain performance entries to prevent buffer overflow warning from dependencies
 import { PerformanceObserver, performance } from "node:perf_hooks";
 new PerformanceObserver((list) => {
@@ -34,6 +49,8 @@ import { setEstimatorModel } from "./core/compaction/token-estimator.js";
 import { getContextWindow } from "./core/model-registry.js";
 import { MCPClientManager, getMCPServers } from "./core/mcp/index.js";
 import { discoverAgents } from "./core/agents.js";
+import { discoverSkills } from "./core/skills.js";
+import path from "node:path";
 import { loginAnthropic } from "./core/oauth/anthropic.js";
 import { loginOpenAI } from "./core/oauth/openai.js";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "./core/oauth/types.js";
@@ -43,11 +60,144 @@ import { checkAndAutoUpdate } from "./core/auto-update.js";
 const _require = createRequire(import.meta.url);
 const CLI_VERSION = (_require("../package.json") as { version: string }).version;
 
+// ── Logo + gradient (mirrors Banner.tsx) ────────────────────────────
+const LOGO_LINES = [
+  " \u2584\u2580\u2580\u2580 \u2584\u2580\u2580\u2580",
+  " \u2588 \u2580\u2588 \u2588 \u2580\u2588",
+  " \u2580\u2584\u2584\u2580 \u2580\u2584\u2584\u2580",
+];
+const GRADIENT = [
+  "#60a5fa",
+  "#6da1f9",
+  "#7a9df7",
+  "#8799f5",
+  "#9495f3",
+  "#a18ff1",
+  "#a78bfa",
+  "#a18ff1",
+  "#9495f3",
+  "#8799f5",
+  "#7a9df7",
+  "#6da1f9",
+];
+
+function gradientLine(text: string): string {
+  let result = "";
+  let colorIdx = 0;
+  for (const ch of text) {
+    if (ch === " ") {
+      result += ch;
+    } else {
+      result += chalk.hex(GRADIENT[colorIdx % GRADIENT.length])(ch);
+      colorIdx++;
+    }
+  }
+  return result;
+}
+
+function printHelp(): void {
+  // Clear screen for a clean look, consistent with the TUI startup
+  process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+
+  const dim = chalk.dim;
+  const primary = chalk.hex("#60a5fa");
+  const accent = chalk.hex("#a78bfa");
+  const bold = chalk.bold;
+  const gap = "   ";
+
+  // Banner — matches the Ink Banner component layout
+  console.log();
+  console.log(
+    gradientLine(LOGO_LINES[0]) +
+      gap +
+      primary.bold("MR Agentix Coder") +
+      dim(` v${CLI_VERSION}`) +
+      dim(" · By ") +
+      bold("Michael Rathgeb"),
+  );
+  console.log(gradientLine(LOGO_LINES[1]) + gap + dim("AI coding agent"));
+  console.log(gradientLine(LOGO_LINES[2]));
+  console.log();
+
+  // Usage
+  console.log(primary("Usage:") + "  mragentix " + dim("[options]") + " " + dim("[prompt]"));
+  console.log();
+
+  // Commands
+  console.log(primary("Commands:"));
+  const cmds: [string, string][] = [
+    ["login", "Log in to an AI provider (Anthropic, OpenAI)"],
+    ["logout", "Log out and clear stored credentials"],
+    ["sessions", "Browse and resume previous sessions"],
+    ["continue", "Resume the most recent session"],
+    ["serve", "Start the HTTP/WebSocket API server"],
+    ["telegram", "Configure Telegram bot integration"],
+  ];
+  for (const [name, desc] of cmds) {
+    console.log(`  ${accent(name.padEnd(20))} ${dim(desc)}`);
+  }
+  console.log();
+
+  // Options
+  console.log(primary("Options:"));
+  const opts: [string, string][] = [
+    ["-h, --help", "Show this help message"],
+    ["-v, --version", "Show version number"],
+    ["--provider <name>", "AI provider (anthropic, openai)"],
+    ["--model <name>", "Model to use (e.g. claude-sonnet-4-6, gpt-4.1)"],
+    ["--max-turns <n>", "Maximum agent turns per prompt"],
+    ["--system-prompt <text>", "Override the system prompt"],
+    ["--json", "JSON output mode (for sub-agents)"],
+    ["--rpc", "JSON-RPC mode (for IDE integrations)"],
+  ];
+  for (const [flag, desc] of opts) {
+    console.log(`  ${accent(flag.padEnd(24))} ${dim(desc)}`);
+  }
+  console.log();
+
+  // Interactive commands
+  console.log(primary("Interactive commands") + dim(" (inside the chat):"));
+  const slashCmds: [string, string][] = [
+    ["/help", "Show available slash commands"],
+    ["/model", "Switch AI model"],
+    ["/compact", "Compact conversation context"],
+    ["/session", "Switch or create sessions"],
+    ["/new", "Start a new session"],
+    ["/settings", "Open settings"],
+    ["/quit", "Exit mragentix"],
+  ];
+  for (const [name, desc] of slashCmds) {
+    console.log(`  ${accent(name.padEnd(20))} ${dim(desc)}`);
+  }
+  console.log();
+
+  // Keyboard shortcuts
+  console.log(primary("Keyboard shortcuts:"));
+  const shortcuts: [string, string][] = [
+    ["Ctrl+T", "Toggle task overlay"],
+    ["Ctrl+S", "Toggle skills overlay"],
+    ["Ctrl+P", "Toggle plan mode"],
+    ["Shift+Tab", "Toggle thinking"],
+    ["Shift+Enter", "New line in input"],
+  ];
+  for (const [key, desc] of shortcuts) {
+    console.log(`  ${accent(key.padEnd(20))} ${dim(desc)}`);
+  }
+  console.log();
+}
+
 function main(): void {
   // Silent auto-update check (throttled, non-blocking on failure)
   const updateMessage = checkAndAutoUpdate(CLI_VERSION);
   if (updateMessage) {
     console.error(chalk.hex("#60a5fa")(updateMessage));
+  }
+
+  // Intercept --help / -h before anything else so it works with subcommands
+  // (e.g. `mragentix login --help` or `mragentix --help`)
+  if (process.argv.includes("--help") || process.argv.includes("-h")) {
+    printHelp();
+    process.exit(0);
   }
 
   // Handle subcommands before parseArgs
@@ -112,6 +262,7 @@ function main(): void {
 
   const { values, positionals } = parseArgs({
     options: {
+      help: { type: "boolean", short: "h" },
       version: { type: "boolean", short: "v" },
       json: { type: "boolean" },
       rpc: { type: "boolean" },
@@ -123,6 +274,11 @@ function main(): void {
     allowPositionals: true,
     strict: true,
   });
+
+  if (values.help) {
+    printHelp();
+    process.exit(0);
+  }
 
   if (values.version) {
     console.log(CLI_VERSION);
@@ -266,15 +422,43 @@ async function runInkTUI(opts: {
     }
   }
 
-  // Discover agents and build tools
+  // Ensure project-local .gg directories exist
+  const localGGDir = path.join(cwd, ".mragentix");
+  await fs.promises.mkdir(path.join(localGGDir, "skills"), { recursive: true });
+  await fs.promises.mkdir(path.join(localGGDir, "commands"), { recursive: true });
+  await fs.promises.mkdir(path.join(localGGDir, "agents"), { recursive: true });
+
+  // Discover agents and skills
   const agents = await discoverAgents({
     globalAgentsDir: paths.agentsDir,
     projectDir: cwd,
   });
+  const skills = await discoverSkills({
+    globalSkillsDir: paths.skillsDir,
+    projectDir: cwd,
+  });
 
   // Build system prompt & tools (with sub-agent support)
-  const systemPrompt = await buildSystemPrompt(cwd);
-  const { tools, processManager } = createTools(cwd, { agents, provider, model });
+  const systemPrompt = await buildSystemPrompt(cwd, skills);
+
+  // Plan mode refs — shared between tools and UI
+  const planModeRef = { current: false };
+  const onEnterPlanRef: { current: (reason?: string) => void } = {
+    current: () => {},
+  };
+  const onExitPlanRef: { current: (planPath: string) => Promise<string> } = {
+    current: () => Promise.resolve("cancelled"),
+  };
+
+  const { tools, processManager } = createTools(cwd, {
+    agents,
+    skills,
+    provider,
+    model,
+    planModeRef,
+    onEnterPlan: (reason) => onEnterPlanRef.current(reason),
+    onExitPlan: (planPath) => onExitPlanRef.current(planPath),
+  });
 
   // Connect MCP servers
   const mcpManager = new MCPClientManager();
@@ -384,6 +568,10 @@ async function runInkTUI(opts: {
     settingsFile: paths.settingsFile,
     mcpManager,
     authStorage,
+    planModeRef,
+    onEnterPlanRef,
+    onExitPlanRef,
+    skills,
   });
 
   closeLogger();
@@ -603,10 +791,10 @@ async function runTelegramSetup(): Promise<void> {
   console.log();
   console.log(
     `  ${gradientText(LOGO[0]!)}${GAP}` +
-      chalk.hex("#60a5fa").bold("GG Coder") +
+      chalk.hex("#60a5fa").bold("MR Agentix Coder") +
       chalk.hex("#6b7280")(` v${CLI_VERSION}`) +
       chalk.hex("#6b7280")(" · By ") +
-      chalk.white.bold("Ken Kai"),
+      chalk.white.bold("Michael Rathgeb"),
   );
   console.log(`  ${gradientText(LOGO[1]!)}${GAP}` + chalk.hex("#a78bfa")("Telegram Setup"));
   console.log(`  ${gradientText(LOGO[2]!)}${GAP}` + chalk.hex("#6b7280")("Remote Control"));
@@ -710,7 +898,7 @@ async function runTelegramSetup(): Promise<void> {
         chalk.hex("#6b7280")("    2. Add the bot to your group\n") +
         chalk.hex("#6b7280")("    3. Send /link in the group to connect it to a project\n\n") +
         chalk.hex("#60a5fa")("  To start:\n") +
-        chalk.hex("#6b7280")("    cd your-project && ggcoder serve\n"),
+        chalk.hex("#6b7280")("    cd your-project && mragentix serve\n"),
     );
   } finally {
     rl.close();
@@ -741,10 +929,10 @@ async function runServe(): Promise<void> {
     console.error(
       chalk.hex("#ef4444")("Telegram not configured.\n\n") +
         "Run " +
-        chalk.hex("#60a5fa").bold("ggcoder telegram") +
+        chalk.hex("#60a5fa").bold("mragentix telegram") +
         " to set up your bot token and user ID.\n\n" +
         chalk.hex("#6b7280")("Or provide manually:\n") +
-        chalk.hex("#6b7280")("  ggcoder serve --bot-token TOKEN --user-id ID"),
+        chalk.hex("#6b7280")("  mragentix serve --bot-token TOKEN --user-id ID"),
     );
     process.exit(1);
   }

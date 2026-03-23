@@ -9,7 +9,7 @@ import { playNotificationSound } from "../utils/sound.js";
 import type { Message, Provider, ThinkingLevel, TextContent, ImageContent } from "@kenkaiiii/gg-ai";
 import { extractImagePaths, type ImageAttachment } from "../utils/image.js";
 import type { AgentTool } from "@kenkaiiii/gg-agent";
-import { useAgentLoop, type ActivityPhase } from "./hooks/useAgentLoop.js";
+import { useAgentLoop, type ActivityPhase, type UserContent } from "./hooks/useAgentLoop.js";
 import { UserMessage } from "./components/UserMessage.js";
 import type { PasteInfo } from "./components/InputArea.js";
 import { AssistantMessage } from "./components/AssistantMessage.js";
@@ -24,8 +24,10 @@ import { ActivityIndicator } from "./components/ActivityIndicator.js";
 import { InputArea } from "./components/InputArea.js";
 import { Footer } from "./components/Footer.js";
 import { Banner } from "./components/Banner.js";
+import { PlanOverlay } from "./components/PlanOverlay.js";
 import { ModelSelector } from "./components/ModelSelector.js";
 import { TaskOverlay } from "./components/TaskOverlay.js";
+import { SkillsOverlay } from "./components/SkillsOverlay.js";
 import { BackgroundTasksBar } from "./components/BackgroundTasksBar.js";
 import type { SlashCommandInfo } from "./components/SlashCommandMenu.js";
 import type { ProcessManager, BackgroundProcess } from "../core/process-manager.js";
@@ -41,6 +43,8 @@ import { shouldCompact, compact } from "../core/compaction/compactor.js";
 import { estimateConversationTokens } from "../core/compaction/token-estimator.js";
 import { PROMPT_COMMANDS, getPromptCommand } from "../core/prompt-commands.js";
 import { loadCustomCommands, type CustomCommand } from "../core/custom-commands.js";
+import { buildSystemPrompt } from "../system-prompt.js";
+import type { Skill } from "../core/skills.js";
 import type { MCPClientManager } from "../core/mcp/index.js";
 import { getMCPServers } from "../core/mcp/index.js";
 import type { AuthStorage } from "../core/auth-storage.js";
@@ -70,7 +74,7 @@ function getProviderErrorHint(message: string): string | null {
     return "You've hit the provider's rate limit. Wait a moment before retrying.";
   }
   if (lower.includes("502") || lower.includes("bad gateway")) {
-    return "The provider returned a server error. This is not a ggcoder issue — try again shortly.";
+    return "The provider returned a server error. This is not a mragentix issue — try again shortly.";
   }
   if (lower.includes("503") || lower.includes("service unavailable")) {
     return "The provider's service is temporarily unavailable. Try again in a moment.";
@@ -79,7 +83,7 @@ function getProviderErrorHint(message: string): string | null {
     return "The request to the provider timed out. Their servers may be slow — try again.";
   }
   if (lower.includes("500") && lower.includes("internal server error")) {
-    return "The provider experienced an internal error. This is not a ggcoder issue.";
+    return "The provider experienced an internal error. This is not a mragentix issue.";
   }
   if (
     lower.includes("does not recognize the requested model") ||
@@ -145,6 +149,13 @@ interface InfoItem {
   id: string;
 }
 
+interface QueuedItem {
+  kind: "queued";
+  text: string;
+  imageCount?: number;
+  id: string;
+}
+
 interface CompactingItem {
   kind: "compacting";
   id: string;
@@ -198,6 +209,13 @@ interface ServerToolDoneItem {
   id: string;
 }
 
+interface PlanTransitionItem {
+  kind: "plan_transition";
+  text: string;
+  active: boolean;
+  id: string;
+}
+
 interface TombstoneItem {
   kind: "tombstone";
   id: string;
@@ -231,12 +249,14 @@ export type CompletedItem =
   | ServerToolDoneItem
   | ErrorItem
   | InfoItem
+  | QueuedItem
   | CompactingItem
   | CompactedItem
   | DurationItem
   | BannerItem
   | SubAgentGroupItem
   | ToolGroupItem
+  | PlanTransitionItem
   | TombstoneItem;
 
 /**
@@ -411,6 +431,10 @@ export interface AppProps {
   settingsFile?: string;
   mcpManager?: MCPClientManager;
   authStorage?: AuthStorage;
+  planModeRef?: { current: boolean };
+  onEnterPlanRef?: { current: (reason?: string) => void };
+  onExitPlanRef?: { current: (planPath: string) => Promise<string> };
+  skills?: Skill[];
 }
 
 // ── App Component ──────────────────────────────────────────
@@ -418,13 +442,24 @@ export interface AppProps {
 export function App(props: AppProps) {
   const theme = useTheme();
   const { stdout } = useStdout();
-  const { resizeKey } = useTerminalSize();
+  const { columns, resizeKey } = useTerminalSize();
+
+  // Hoisted before terminal title hook so it can reference them
+  const [lastUserMessage, setLastUserMessage] = useState("");
+  const [planMode, setPlanMode] = useState(false);
 
   // Terminal title — updated later after agentLoop is created
   // (hoisted here so the hook is always called in the same order)
   const [titlePhase, setTitlePhase] = useState<ActivityPhase>("idle");
   const [titleRunning, setTitleRunning] = useState(false);
-  useTerminalTitle(titlePhase, titleRunning);
+  const [titleToolNames, setTitleToolNames] = useState<string[]>([]);
+  useTerminalTitle({
+    phase: titlePhase,
+    isRunning: titleRunning,
+    userMessage: lastUserMessage,
+    activeToolNames: titleToolNames,
+    planMode,
+  });
 
   // Items scrolled into Static (history).  For restored sessions, skip the
   // banner and add restored items via useEffect so Ink's <Static> treats them
@@ -443,25 +478,28 @@ export function App(props: AppProps) {
   }, [isRestoredSession, props.initialHistory]);
   // Items from the current/last turn — rendered in the live area so they stay visible
   const [liveItems, setLiveItems] = useState<CompletedItem[]>([]);
-  const [overlay, setOverlay] = useState<"model" | "tasks" | null>(null);
+  const [overlay, setOverlay] = useState<"model" | "tasks" | "skills" | "plan" | null>(null);
   const [taskCount, setTaskCount] = useState(() => getTaskCount(props.cwd));
   const [runAllTasks, setRunAllTasks] = useState(false);
   const runAllTasksRef = useRef(false);
   const startTaskRef = useRef<(title: string, prompt: string, taskId: string) => void>(() => {});
   const cwdRef = useRef(props.cwd);
   const [staticKey, setStaticKey] = useState(0);
-  const [lastUserMessage, setLastUserMessage] = useState("");
   const [doneStatus, setDoneStatus] = useState<{
     durationMs: number;
     toolsUsed: string[];
     verb: string;
   } | null>(null);
+  // Suppress "done" status when a plan overlay is about to open
+  const planOverlayPendingRef = useRef(false);
   const [gitBranch, setGitBranch] = useState<string | null>(null);
   const [currentModel, setCurrentModel] = useState(props.model);
   const [currentProvider, setCurrentProvider] = useState(props.provider);
   const [currentTools, setCurrentTools] = useState(props.tools);
   const [thinkingEnabled, setThinkingEnabled] = useState(!!props.thinking);
   const messagesRef = useRef<Message[]>(props.messages);
+  const [planAutoExpand, setPlanAutoExpand] = useState(false);
+  const approvedPlanPathRef = useRef<string | undefined>(undefined);
   const nextIdRef = useRef(0);
   const sessionManagerRef = useRef(
     props.sessionsDir ? new SessionManager(props.sessionsDir) : null,
@@ -485,7 +523,7 @@ export function App(props: AppProps) {
     getGitBranch(props.cwd).then(setGitBranch);
   }, [props.cwd]);
 
-  // Load custom commands from .gg/commands/
+  // Load custom commands from .mragentix/commands/
   const [customCommands, setCustomCommands] = useState<CustomCommand[]>([]);
   const reloadCustomCommands = useCallback(() => {
     loadCustomCommands(props.cwd).then(setCustomCommands);
@@ -493,6 +531,74 @@ export function App(props: AppProps) {
   useEffect(() => {
     reloadCustomCommands();
   }, [reloadCustomCommands]);
+
+  // ── Plan mode wiring ─────────────────────────────────────
+  // Sync planModeRef with React state
+  useEffect(() => {
+    if (props.planModeRef) {
+      props.planModeRef.current = planMode;
+    }
+  }, [planMode, props.planModeRef]);
+
+  // Rebuild system prompt when plan mode changes
+  useEffect(() => {
+    void (async () => {
+      const newPrompt = await buildSystemPrompt(
+        props.cwd,
+        props.skills,
+        planMode,
+        approvedPlanPathRef.current,
+      );
+      if (messagesRef.current[0]?.role === "system") {
+        messagesRef.current[0] = {
+          role: "system" as const,
+          content: newPrompt,
+        };
+      }
+    })();
+  }, [planMode, props.cwd, props.skills]);
+
+  // Wire onEnterPlan callback ref
+  useEffect(() => {
+    if (props.onEnterPlanRef) {
+      props.onEnterPlanRef.current = (reason?: string) => {
+        setPlanMode(true);
+        const msg = reason ? `Plan Mode Activated — ${reason}` : "Plan Mode Activated";
+        setLiveItems((prev) => [
+          ...prev,
+          { kind: "plan_transition", text: msg, active: true, id: getId() },
+        ]);
+      };
+    }
+  }, [props.onEnterPlanRef]);
+
+  // Wire onExitPlan callback ref
+  useEffect(() => {
+    if (props.onExitPlanRef) {
+      props.onExitPlanRef.current = async (planPath: string) => {
+        // Deactivate plan mode, store approved plan path, open pane
+        setPlanMode(false);
+        approvedPlanPathRef.current = planPath;
+        // Use setTimeout to open pane after the current tool execution completes,
+        // so the turn can finish and the UI transitions cleanly
+        // Flag that the plan overlay is about to open — suppresses the
+        // premature "done" status that fires when the agent loop finishes
+        planOverlayPendingRef.current = true;
+        setTimeout(() => {
+          stdout?.write("\x1b[2J\x1b[3J\x1b[H");
+          setPlanAutoExpand(true);
+          setOverlay("plan");
+          planOverlayPendingRef.current = false;
+        }, 300);
+        return (
+          "Plan submitted. Exiting plan mode.\n" +
+          "The plan pane is opening for user review.\n" +
+          "Plan saved at: " +
+          planPath
+        );
+      };
+    }
+  }, [props.onExitPlanRef, stdout]);
 
   const persistNewMessages = useCallback(async () => {
     const sm = sessionManagerRef.current;
@@ -555,6 +661,7 @@ export function App(props: AppProps) {
           apiKey: compactApiKey,
           contextWindow,
           signal: undefined,
+          approvedPlanPath: approvedPlanPathRef.current,
         });
 
         // Replace spinner with completed notice
@@ -979,6 +1086,9 @@ export function App(props: AppProps) {
           duration: `${durationMs}ms`,
           toolsUsed: toolsUsed.join(",") || "none",
         });
+        // Don't show "done" status when plan overlay is about to open —
+        // the agent loop finished but we're waiting for user plan review
+        if (planOverlayPendingRef.current) return;
         setDoneStatus({ durationMs, toolsUsed, verb: pickDurationVerb(toolsUsed) });
         playNotificationSound();
         // Two-phase flush to avoid Ink text clipping.
@@ -1013,6 +1123,7 @@ export function App(props: AppProps) {
       onAborted: useCallback(() => {
         log("WARN", "agent", "Agent run aborted by user");
         setRunAllTasks(false);
+        setDoneStatus(null);
         setLiveItems((prev) => {
           const next = prev.map((item): CompletedItem => {
             if (item.kind === "subagent_group") return { ...item, aborted: true };
@@ -1056,6 +1167,36 @@ export function App(props: AppProps) {
           return [...next, { kind: "info", text: "Request was stopped.", id: getId() }];
         });
       }, []),
+      onQueuedStart: useCallback((content: UserContent) => {
+        // When a queued message starts processing, show it as a UserItem
+        // and flush prior items to history
+        const displayText =
+          typeof content === "string"
+            ? content
+            : content
+                .filter((c): c is TextContent => c.type === "text")
+                .map((c) => c.text)
+                .join("\n");
+        const imageCount =
+          typeof content === "string"
+            ? undefined
+            : content.filter((c) => c.type === "image").length || undefined;
+        setLiveItems((prev) => {
+          if (prev.length > 0) {
+            setHistory((h) => compactHistory([...h, ...trimFlushedItems(prev)]));
+          }
+          return [];
+        });
+        const userItem: UserItem = {
+          kind: "user",
+          text: displayText,
+          imageCount,
+          id: getId(),
+        };
+        setLastUserMessage(displayText);
+        setDoneStatus(null);
+        setLiveItems([userItem]);
+      }, []),
     },
   );
 
@@ -1075,10 +1216,12 @@ export function App(props: AppProps) {
   });
 
   // Sync terminal title with agent loop state
+  const activeToolNamesKey = agentLoop.activeToolCalls.map((tc) => tc.name).join(",");
   useEffect(() => {
     setTitlePhase(agentLoop.activityPhase);
     setTitleRunning(agentLoop.isRunning);
-  }, [agentLoop.activityPhase, agentLoop.isRunning]);
+    setTitleToolNames(agentLoop.activeToolCalls.map((tc) => tc.name));
+  }, [agentLoop.activityPhase, agentLoop.isRunning, activeToolNamesKey]);
 
   // Animated thinking border — derived from global animation tick
   const animTick = useAnimationTick();
@@ -1137,7 +1280,38 @@ export function App(props: AppProps) {
         return;
       }
 
-      // Handle prompt-template commands (built-in + custom from .gg/commands/)
+      // Handle /plan — toggle plan mode
+      if (trimmed === "/plan" || trimmed === "/plan on") {
+        setPlanMode(true);
+        setLiveItems((prev) => [
+          ...prev,
+          { kind: "plan_transition", text: "Plan Mode Activated", active: true, id: getId() },
+        ]);
+        return;
+      }
+      if (trimmed === "/plan off") {
+        setPlanMode(false);
+        setLiveItems((prev) => [
+          ...prev,
+          {
+            kind: "plan_transition",
+            text: "Plan Mode Deactivated",
+            active: false,
+            id: getId(),
+          },
+        ]);
+        return;
+      }
+
+      // Handle /plans — open plan pane
+      if (trimmed === "/plans") {
+        stdout?.write("\x1b[2J\x1b[3J\x1b[H");
+        setPlanAutoExpand(false);
+        setOverlay("plan");
+        return;
+      }
+
+      // Handle prompt-template commands (built-in + custom from .mragentix/commands/)
       if (trimmed.startsWith("/")) {
         const parts = trimmed.slice(1).split(" ");
         const cmdName = parts[0];
@@ -1199,33 +1373,8 @@ export function App(props: AppProps) {
         }
       }
 
-      // Move any remaining live items into history (Static) before starting new turn
-      setLiveItems((prev) => {
-        if (prev.length > 0) {
-          setHistory((h) => compactHistory([...h, ...trimFlushedItems(prev)]));
-        }
-        return [];
-      });
-
-      // Build display text — strip image paths, show badges instead
+      // ── Build user content (shared by normal + queued paths) ──
       const hasImages = inputImages.length > 0;
-      let displayText = input;
-      if (hasImages) {
-        const { cleanText } = await extractImagePaths(input, props.cwd);
-        displayText = cleanText;
-      }
-      const userItem: UserItem = {
-        kind: "user",
-        text: displayText,
-        imageCount: hasImages ? inputImages.length : undefined,
-        pasteInfo,
-        id: getId(),
-      };
-      setLastUserMessage(input);
-      setDoneStatus(null);
-      setLiveItems([userItem]);
-
-      // Build user content — plain string or content array with images
       const modelInfo = getModel(currentModel);
       const modelSupportsImages = modelInfo?.supportsImages ?? true;
       let userContent: string | (TextContent | ImageContent)[];
@@ -1245,7 +1394,7 @@ export function App(props: AppProps) {
           } else {
             // GLM models: save image to temp file and instruct model to use vision MCP tool
             const ext = img.mediaType.split("/")[1] ?? "png";
-            const tmpPath = `/tmp/ggcoder-img-${Date.now()}.${ext}`;
+            const tmpPath = `/tmp/mragentix-img-${Date.now()}.${ext}`;
             try {
               writeFileSync(tmpPath, Buffer.from(img.data, "base64"));
               parts.push({
@@ -1265,6 +1414,54 @@ export function App(props: AppProps) {
       } else {
         userContent = input;
       }
+
+      // ── Queue message if agent is already running ──
+      if (agentLoop.isRunning) {
+        log(
+          "INFO",
+          "queue",
+          `Queued message: ${trimmed.length > 80 ? trimmed.slice(0, 80) + "..." : trimmed}`,
+        );
+        agentLoop.queueMessage(userContent);
+        let displayText = input;
+        if (hasImages) {
+          const { cleanText } = await extractImagePaths(input, props.cwd);
+          displayText = cleanText;
+        }
+        const queuedItem: QueuedItem = {
+          kind: "queued",
+          text: displayText,
+          imageCount: hasImages ? inputImages.length : undefined,
+          id: getId(),
+        };
+        setLiveItems((prev) => [...prev, queuedItem]);
+        return;
+      }
+
+      // Move any remaining live items into history (Static) before starting new turn
+      setLiveItems((prev) => {
+        if (prev.length > 0) {
+          setHistory((h) => compactHistory([...h, ...trimFlushedItems(prev)]));
+        }
+        return [];
+      });
+
+      // Build display text — strip image paths, show badges instead
+      let displayText = input;
+      if (hasImages) {
+        const { cleanText } = await extractImagePaths(input, props.cwd);
+        displayText = cleanText;
+      }
+      const userItem: UserItem = {
+        kind: "user",
+        text: displayText,
+        imageCount: hasImages ? inputImages.length : undefined,
+        pasteInfo,
+        id: getId(),
+      };
+      setLastUserMessage(input);
+      setDoneStatus(null);
+      setLiveItems([userItem]);
 
       // Run agent
       try {
@@ -1286,6 +1483,7 @@ export function App(props: AppProps) {
 
   const handleAbort = useCallback(() => {
     if (agentLoop.isRunning) {
+      agentLoop.clearQueue();
       agentLoop.abort();
     } else {
       process.exit(0);
@@ -1386,6 +1584,8 @@ export function App(props: AppProps) {
       { name: "compact", aliases: ["c"], description: "Compact conversation" },
       { name: "clear", aliases: [], description: "Clear session and terminal" },
       { name: "quit", aliases: ["q", "exit"], description: "Exit the agent" },
+      { name: "plan", aliases: [], description: "Toggle plan mode (on/off)" },
+      { name: "plans", aliases: [], description: "Open plans pane" },
       ...PROMPT_COMMANDS.map((cmd) => ({
         name: cmd.name,
         aliases: cmd.aliases,
@@ -1485,13 +1685,13 @@ export function App(props: AppProps) {
       case "error": {
         const providerHint = getProviderErrorHint(item.message);
         return (
-          <Box key={item.id} marginTop={1} flexDirection="column">
-            <Text color={theme.error}>
+          <Box key={item.id} marginTop={1} flexDirection="column" flexShrink={1}>
+            <Text color={theme.error} wrap="wrap">
               {"✗ "}
               {item.message}
             </Text>
             {providerHint && (
-              <Text color={theme.textDim}>
+              <Text color={theme.textDim} wrap="wrap">
                 {"  Hint: "}
                 {providerHint}
               </Text>
@@ -1501,8 +1701,33 @@ export function App(props: AppProps) {
       }
       case "info":
         return (
+          <Box key={item.id} marginTop={1} flexShrink={1}>
+            <Text color={theme.textDim} wrap="wrap">
+              {item.text}
+            </Text>
+          </Box>
+        );
+      case "plan_transition":
+        return (
+          <Box key={item.id} marginTop={1} flexShrink={1}>
+            <Text color={theme.planPrimary} bold wrap="wrap">
+              {item.active ? "⊞ " : "⊟ "}
+              {item.text}
+            </Text>
+          </Box>
+        );
+      case "queued":
+        return (
           <Box key={item.id} marginTop={1}>
-            <Text color={theme.textDim}>{item.text}</Text>
+            <Text color={theme.accent} bold>
+              {"⏳ Queued: "}
+            </Text>
+            <Text color={theme.text} wrap="wrap">
+              {item.text}
+              {item.imageCount
+                ? ` (+${item.imageCount} image${item.imageCount > 1 ? "s" : ""})`
+                : ""}
+            </Text>
           </Box>
         );
       case "compacting":
@@ -1590,13 +1815,16 @@ export function App(props: AppProps) {
   }, [runAllTasks]);
 
   const isTaskView = overlay === "tasks";
+  const isSkillsView = overlay === "skills";
+  const isPlanView = overlay === "plan";
+  const isOverlayView = isTaskView || isSkillsView || isPlanView;
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" width={columns}>
       {/* History — scrolled up, managed by Ink Static. */}
       <Static
         key={`${resizeKey}-${staticKey}`}
-        items={isTaskView ? [] : history}
+        items={isOverlayView ? [] : history}
         style={{ width: "100%" }}
       >
         {(item) => (
@@ -1630,6 +1858,82 @@ export function App(props: AppProps) {
             }
           }}
         />
+      ) : isSkillsView ? (
+        <SkillsOverlay
+          cwd={props.cwd}
+          onClose={() => {
+            stdout?.write("\x1b[2J\x1b[3J\x1b[H");
+            setStaticKey((k) => k + 1);
+            setOverlay(null);
+          }}
+        />
+      ) : isPlanView ? (
+        <PlanOverlay
+          cwd={props.cwd}
+          autoExpandNewest={planAutoExpand}
+          onClose={() => {
+            stdout?.write("\x1b[2J\x1b[3J\x1b[H");
+            setStaticKey((k) => k + 1);
+            setPlanAutoExpand(false);
+            setOverlay(null);
+          }}
+          onApprove={(planPath) => {
+            // Store approved plan path — will be injected into the new system prompt
+            approvedPlanPathRef.current = planPath;
+
+            // Clear session for a fresh context focused on the plan
+            stdout?.write("\x1b[2J\x1b[3J\x1b[H");
+            setHistory([{ kind: "banner", id: "banner" }]);
+            setLiveItems([]);
+            setStaticKey((k) => k + 1);
+            setPlanAutoExpand(false);
+            setOverlay(null);
+
+            // Rebuild system prompt with the approved plan, then reset the session
+            void (async () => {
+              const newPrompt = await buildSystemPrompt(props.cwd, props.skills, false, planPath);
+              messagesRef.current = [{ role: "system" as const, content: newPrompt }];
+              agentLoop.reset();
+              persistedIndexRef.current = messagesRef.current.length;
+
+              // Create a new session file
+              const sm = sessionManagerRef.current;
+              if (sm) {
+                const s = await sm.create(props.cwd, currentProvider, currentModel);
+                sessionPathRef.current = s.path;
+              }
+
+              // Start implementation with a clean context
+              setLiveItems([
+                {
+                  kind: "info",
+                  text: "Plan approved — starting fresh session for implementation",
+                  id: getId(),
+                },
+              ]);
+              setDoneStatus(null);
+              await agentLoop.run(
+                "The plan has been approved. Implement it now, following each step in order.",
+              );
+            })();
+          }}
+          onReject={(planPath, feedback) => {
+            stdout?.write("\x1b[2J\x1b[3J\x1b[H");
+            setStaticKey((k) => k + 1);
+            setPlanAutoExpand(false);
+            setOverlay(null);
+            setDoneStatus(null);
+            // Send rejection + feedback to the agent
+            const msg =
+              `The plan at ${planPath} was rejected.\n\nFeedback: ${feedback}\n\n` +
+              `Please revise the plan based on this feedback.`;
+            setLiveItems((prev) => [
+              ...prev,
+              { kind: "info", text: `Plan rejected — "${feedback}"`, id: getId() },
+            ]);
+            void agentLoop.run(msg);
+          }}
+        />
       ) : (
         <>
           {/* Content area */}
@@ -1641,6 +1945,7 @@ export function App(props: AppProps) {
               streamingThinking={agentLoop.streamingThinking}
               showThinking={props.showThinking}
               thinkingMs={agentLoop.thinkingMs}
+              planMode={planMode}
             />
           </Box>
 
@@ -1658,6 +1963,7 @@ export function App(props: AppProps) {
               }
               paddingLeft={1}
               paddingRight={1}
+              width={columns}
             >
               <ActivityIndicator
                 phase={agentLoop.activityPhase}
@@ -1667,6 +1973,7 @@ export function App(props: AppProps) {
                 tokenEstimate={agentLoop.streamedTokenEstimate}
                 userMessage={lastUserMessage}
                 activeToolNames={agentLoop.activeToolCalls.map((tc) => tc.name)}
+                planMode={planMode}
               />
             </Box>
           ) : (
@@ -1680,6 +1987,16 @@ export function App(props: AppProps) {
             )
           )}
 
+          {/* Queue indicator */}
+          {agentLoop.queuedCount > 0 && (
+            <Box marginTop={1}>
+              <Text color={theme.accent}>
+                {"⏳ "}
+                {agentLoop.queuedCount} message{agentLoop.queuedCount > 1 ? "s" : ""} queued
+              </Text>
+            </Box>
+          )}
+
           {/* Input + Footer */}
           <InputArea
             onSubmit={handleSubmit}
@@ -1691,6 +2008,24 @@ export function App(props: AppProps) {
             onToggleTasks={() => {
               stdout?.write("\x1b[2J\x1b[3J\x1b[H");
               setOverlay("tasks");
+            }}
+            onToggleSkills={() => {
+              stdout?.write("\x1b[2J\x1b[3J\x1b[H");
+              setOverlay("skills");
+            }}
+            onTogglePlanMode={() => {
+              const next = !planMode;
+              setPlanMode(next);
+              log("INFO", "plan", `Plan mode ${next ? "enabled" : "disabled"}`);
+              setLiveItems((items) => [
+                ...items,
+                {
+                  kind: "plan_transition",
+                  text: next ? "Plan Mode Activated" : "Plan Mode Deactivated",
+                  active: next,
+                  id: getId(),
+                },
+              ]);
             }}
             cwd={props.cwd}
             commands={allCommands}
@@ -1710,6 +2045,7 @@ export function App(props: AppProps) {
               cwd={props.cwd}
               gitBranch={gitBranch}
               thinkingEnabled={thinkingEnabled}
+              planMode={planMode}
             />
           )}
           {bgTasks.length > 0 && (
