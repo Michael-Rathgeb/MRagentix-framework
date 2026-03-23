@@ -79,9 +79,9 @@ function parseFrontmatter(raw: string, filename: string): { name: string; descri
 // ── Banner ───────────────────────────────────────────────
 
 const SKILL_LOGO = [
-  " \u2584\u2580\u2580\u2580 \u2584\u2580\u2580\u2580",
-  " \u2588 \u2580\u2588 \u2588 \u2580\u2588",
-  " \u2580\u2584\u2584\u2580 \u2580\u2584\u2584\u2580",
+  " ╭─────╮",
+  " │ ◠ ◠ │",
+  " ╰──┬──╯",
 ];
 
 const GRADIENT = [
@@ -96,7 +96,7 @@ const GRADIENT = [
 ];
 
 const GAP = "   ";
-const LOGO_WIDTH = 9;
+const LOGO_WIDTH = 7;
 const SIDE_BY_SIDE_MIN = LOGO_WIDTH + GAP.length + 20;
 
 function SkillGradientText({ text }: { text: string }) {

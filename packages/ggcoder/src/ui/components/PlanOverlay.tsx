@@ -49,9 +49,9 @@ async function loadPlanEntries(cwd: string): Promise<PlanEntry[]> {
 // ── Banner ───────────────────────────────────────────────
 
 const PLAN_LOGO = [
-  " \u2584\u2580\u2580\u2580 \u2584\u2580\u2580\u2580",
-  " \u2588 \u2580\u2588 \u2588 \u2580\u2588",
-  " \u2580\u2584\u2584\u2580 \u2580\u2584\u2584\u2580",
+  " ╭─────╮",
+  " │ ◠ ◠ │",
+  " ╰──┬──╯",
 ];
 
 const AMBER_GRADIENT = [
@@ -65,7 +65,7 @@ const AMBER_GRADIENT = [
 ];
 
 const GAP = "   ";
-const LOGO_WIDTH = 9;
+const LOGO_WIDTH = 7;
 const SIDE_BY_SIDE_MIN = LOGO_WIDTH + GAP.length + 20;
 
 function PlanGradientText({ text }: { text: string }) {

@@ -742,11 +742,11 @@ export async function runServeMode(options: ServeModeOptions): Promise<void> {
     const displayPath =
       home && options.cwd.startsWith(home) ? "~" + options.cwd.slice(home.length) : options.cwd;
 
-    // GG logo with gradient (matches Banner.tsx)
+    // Robot logo with gradient (matches Banner.tsx)
     const LOGO = [
-      " \u2584\u2580\u2580\u2580 \u2584\u2580\u2580\u2580",
-      " \u2588 \u2580\u2588 \u2588 \u2580\u2588",
-      " \u2580\u2584\u2584\u2580 \u2580\u2584\u2584\u2580",
+      " ╭─────╮",
+      " │ ◠ ◠ │",
+      " ╰──┬──╯",
     ];
     const GRADIENT = [
       "#60a5fa",
