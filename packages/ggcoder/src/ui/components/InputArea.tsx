@@ -7,22 +7,9 @@ import { useTerminalSize } from "../hooks/useTerminalSize.js";
 import type { ImageAttachment } from "../../utils/image.js";
 import { extractImagePaths, readImageFile, getClipboardImage } from "../../utils/image.js";
 import { SlashCommandMenu, filterCommands, type SlashCommandInfo } from "./SlashCommandMenu.js";
-import { log } from "../../core/logger.js";
 
 const MAX_VISIBLE_LINES = 5;
 const PROMPT = "❯ ";
-
-// SGR mouse sequence: ESC [ < button ; col ; row M/m
-// M = press, m = release. Coordinates are 1-based.
-// SGR mouse sequence (global) — used both to strip sequences from input data
-// and to extract click coordinates. Must reset lastIndex before each use.
-// eslint-disable-next-line no-control-regex
-const SGR_MOUSE_RE_G = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
-
-// Enable/disable escape sequences for SGR mouse tracking.
-// ?1000h = basic click tracking, ?1006h = SGR extended mode (supports coords > 223).
-const ENABLE_MOUSE = "\x1b[?1000h\x1b[?1006h";
-const DISABLE_MOUSE = "\x1b[?1006l\x1b[?1000l";
 
 // Option+Arrow escape sequences — terminals send these as raw input strings
 // rather than setting key.meta + key.leftArrow reliably.
@@ -256,151 +243,6 @@ export function InputArea({
     };
   }, [isActive, internal_eventEmitter]);
 
-  // --- Mouse click-to-position-cursor ---
-  // Store layout info in a ref so the mouse handler can map terminal
-  // coordinates to character offsets without re-subscribing on every change.
-  const layoutRef = useRef({
-    value: "",
-    displayLines: [""] as string[],
-    startLine: 0,
-    contentWidth: 10,
-    columns: 80,
-    hasImages: false,
-  });
-
-  // Self-calibrating anchor: the terminal row (1-based) of the first
-  // display line.  Set from the first single-line click (unambiguous).
-  // Ink rewrites from the same starting row on each render, so this
-  // value stays correct as text wraps to additional lines below.
-  const firstLineRowRef = useRef(-1);
-
-  // Enable SGR mouse tracking and intercept mouse sequences before Ink's
-  // useInput sees them (which would insert the raw escape text).  We wrap
-  // the internal event emitter's `emit` so mouse data is consumed here and
-  // never forwarded to Ink's input handler.
-  const mouseEmitRef = useRef<{
-    original: typeof internal_eventEmitter.emit | null;
-  }>({ original: null });
-
-  useEffect(() => {
-    if (!isActive || !internal_eventEmitter) return;
-
-    process.stdout.write(ENABLE_MOUSE);
-
-    // Safety: ensure mouse tracking is disabled even on crash/SIGINT/unexpected exit
-    // so the terminal isn't left in a broken state sending escape sequences on every click.
-    const onProcessExit = () => process.stdout.write(DISABLE_MOUSE);
-    process.on("exit", onProcessExit);
-
-    const originalEmit = internal_eventEmitter.emit.bind(internal_eventEmitter);
-    mouseEmitRef.current.original = originalEmit;
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    internal_eventEmitter.emit = (event: string | symbol, ...args: any[]): boolean => {
-      if (event === "input" && typeof args[0] === "string") {
-        const data = args[0] as string;
-        // Strip all SGR mouse sequences from the data
-        const stripped = data.replace(SGR_MOUSE_RE_G, "");
-
-        // Process each mouse sequence for click handling
-        let match: RegExpExecArray | null;
-        SGR_MOUSE_RE_G.lastIndex = 0;
-        while ((match = SGR_MOUSE_RE_G.exec(data)) !== null) {
-          const btnCode = parseInt(match[1], 10);
-          const termCol = parseInt(match[2], 10);
-          const termRow = parseInt(match[3], 10);
-          const isPress = match[4] === "M";
-
-          // Decode SGR button code with bitmask:
-          // bits 0-1: button (0=left, 1=middle, 2=right, 3=release)
-          // bit 5 (32): motion event
-          // bit 6 (64): scroll wheel
-          const button = btnCode & 3;
-          const isMotion = (btnCode & 32) !== 0;
-
-          // Only handle left-click press (button 0), not motion or scroll
-          if (button !== 0 || isMotion || !isPress) continue;
-
-          const layout = layoutRef.current;
-          if (!layout.value && layout.displayLines.length <= 1 && !layout.displayLines[0]) continue;
-
-          const numDisplayLines = layout.displayLines.length;
-
-          // Calibrate on the first single-line click: the clicked row
-          // IS the first (and only) display line's terminal row.
-          if (firstLineRowRef.current < 0 && numDisplayLines === 1) {
-            firstLineRowRef.current = termRow;
-          }
-
-          // Determine which display line was clicked
-          let clickedDisplayLine: number;
-          if (firstLineRowRef.current > 0) {
-            clickedDisplayLine = termRow - firstLineRowRef.current;
-          } else {
-            // Not calibrated yet (multi-line before first click) — default to line 0
-            clickedDisplayLine = 0;
-          }
-
-          log("INFO", "mouse", "click", {
-            termRow,
-            termCol,
-            firstLineRow: firstLineRowRef.current,
-            clickedDisplayLine,
-            numDisplayLines,
-          });
-
-          // Clamp to valid range
-          if (clickedDisplayLine < 0) clickedDisplayLine = 0;
-          if (clickedDisplayLine >= numDisplayLines) clickedDisplayLine = numDisplayLines - 1;
-
-          // Column within the text: subtract border(1) + padding(1) + prompt(2) = 4
-          const textCol = termCol - 1 - 4;
-          const line = layout.displayLines[clickedDisplayLine];
-          const col = Math.max(0, Math.min(textCol, line.length));
-
-          // Convert display line + col to absolute character offset
-          const { value: val, startLine: sl, contentWidth: cw } = layout;
-          const hardLines = val.split("\n");
-          let charOffset = 0;
-          let vlIndex = 0;
-          let found = false;
-          for (let h = 0; h < hardLines.length; h++) {
-            const wrapped = wrapLine(hardLines[h], cw > 0 ? cw : val.length + 1);
-            for (let w = 0; w < wrapped.length; w++) {
-              if (vlIndex === sl + clickedDisplayLine) {
-                setCursor(Math.min(charOffset + col, val.length));
-                setSelectionAnchor(null);
-                found = true;
-                break;
-              }
-              charOffset += wrapped[w].length;
-              vlIndex++;
-            }
-            if (found) break;
-            charOffset++; // newline
-          }
-        }
-
-        // Forward non-mouse data (if any remains) to Ink
-        if (stripped) {
-          return originalEmit("input", stripped);
-        }
-        return true; // swallowed entirely
-      }
-      return originalEmit(event, ...args);
-    };
-
-    return () => {
-      process.stdout.write(DISABLE_MOUSE);
-      process.removeListener("exit", onProcessExit);
-      // Restore original emit
-      if (mouseEmitRef.current.original) {
-        internal_eventEmitter.emit = mouseEmitRef.current.original;
-        mouseEmitRef.current.original = null;
-      }
-    };
-  }, [isActive, internal_eventEmitter]);
-
   // Helper: delete selected text and return new value + cursor position.
   // Returns null if no selection is active.
   const deleteSelection = (): { newValue: string; newCursor: number } | null => {
@@ -495,8 +337,8 @@ export function InputArea({
         return;
       }
 
-      // Ctrl+V — paste image from clipboard
-      if (key.ctrl && input === "v") {
+      // Ctrl+I — paste image from clipboard
+      if (key.ctrl && input === "i") {
         getClipboardImage().then((img) => {
           if (img) setImages((prev) => [...prev, img]);
         });
@@ -794,14 +636,6 @@ export function InputArea({
   }
   const displayLines = visualLines.slice(startLine, startLine + MAX_VISIBLE_LINES);
   const cursorDisplayLine = cursorLineInfo.line - startLine;
-
-  // Keep layout ref in sync for mouse click handler
-  layoutRef.current.value = value;
-  layoutRef.current.displayLines = displayLines;
-  layoutRef.current.startLine = startLine;
-  layoutRef.current.contentWidth = contentWidth;
-  layoutRef.current.columns = columns;
-  layoutRef.current.hasImages = images.length > 0;
 
   // Determine if the input starts with a slash command and find command boundary
   const isCommand = value.startsWith("/");

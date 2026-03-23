@@ -14,9 +14,9 @@ interface BannerProps {
 }
 
 const LOGO_LINES = [
-  " \u2584\u2580\u2580\u2580 \u2584\u2580\u2580\u2580",
-  " \u2588 \u2580\u2588 \u2588 \u2580\u2588",
-  " \u2580\u2584\u2584\u2580 \u2580\u2584\u2584\u2580",
+  " █▄ ▄█ █▀▄",
+  " █ ▀ █ █▄▀",
+  " █   █ █ █",
 ];
 
 // Extended gradient with reverse path for smooth animation loop
@@ -36,8 +36,8 @@ const GRADIENT = [
 ];
 
 const GAP = "   ";
-// Logo is 9 visible chars wide + GAP (3) = 12 chars before info text
-const LOGO_WIDTH = 9;
+// Logo is 10 visible chars wide + GAP (3) = 13 chars before info text
+const LOGO_WIDTH = 10;
 const SIDE_BY_SIDE_MIN = LOGO_WIDTH + GAP.length + 20; // need ~32 cols for side-by-side
 
 export function Banner({ version, model, cwd, taskCount }: BannerProps) {
