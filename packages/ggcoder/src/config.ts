@@ -1,6 +1,8 @@
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs/promises";
+import { seedDefaultSkills } from "./core/skills.js";
+import { seedDefaultAgents } from "./core/agents.js";
 
 export const APP_NAME = "ggcoder";
 export const VERSION = "0.0.1";
@@ -38,5 +40,11 @@ export async function ensureAppDirs(): Promise<AppPaths> {
   await fs.mkdir(paths.sessionsDir, { recursive: true });
   await fs.mkdir(paths.skillsDir, { recursive: true });
   await fs.mkdir(paths.extensionsDir, { recursive: true });
+  await fs.mkdir(paths.agentsDir, { recursive: true });
+
+  // Seed bundled default skills and agents (only copies missing files)
+  await seedDefaultSkills(paths.skillsDir);
+  await seedDefaultAgents(paths.agentsDir);
+
   return paths;
 }

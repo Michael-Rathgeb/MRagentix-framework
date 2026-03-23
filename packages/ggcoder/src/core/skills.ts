@@ -1,5 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export interface Skill {
   name: string;
@@ -9,26 +12,69 @@ export interface Skill {
 }
 
 /**
- * Discover skills from global and project-local skill directories.
+ * Get the path to the bundled defaults/skills directory shipped with the package.
+ */
+function getBundledSkillsDir(): string {
+  // From src/core/skills.ts → ../../defaults/skills
+  return path.resolve(__dirname, "..", "..", "defaults", "skills");
+}
+
+/**
+ * Seed bundled default skills into the global skills directory.
+ * Only copies files that don't already exist (won't overwrite user customizations).
+ */
+export async function seedDefaultSkills(globalSkillsDir: string): Promise<void> {
+  const bundledDir = getBundledSkillsDir();
+  let bundledFiles: string[];
+  try {
+    bundledFiles = await fs.readdir(bundledDir);
+  } catch {
+    return; // No bundled defaults available
+  }
+
+  await fs.mkdir(globalSkillsDir, { recursive: true });
+
+  for (const file of bundledFiles) {
+    if (!file.endsWith(".md")) continue;
+    const destPath = path.join(globalSkillsDir, file);
+    try {
+      await fs.access(destPath);
+      // File already exists — don't overwrite user customizations
+    } catch {
+      // File doesn't exist — copy the bundled default
+      const srcPath = path.join(bundledDir, file);
+      await fs.copyFile(srcPath, destPath);
+    }
+  }
+}
+
+/**
+ * Discover skills from bundled defaults, global, and project-local skill directories.
+ * Priority: project > global > bundled (later entries with the same name win).
  */
 export async function discoverSkills(options: {
   globalSkillsDir: string;
   projectDir?: string;
 }): Promise<Skill[]> {
-  const skills: Skill[] = [];
+  const skillMap = new Map<string, Skill>();
 
-  // Global skills: ~/.gg/skills/*.md
+  // 1. Bundled default skills (shipped with the package)
+  const bundledDir = getBundledSkillsDir();
+  const bundledSkills = await loadSkillsFromDir(bundledDir, "bundled");
+  for (const s of bundledSkills) skillMap.set(s.name, s);
+
+  // 2. Global skills: ~/.gg/skills/*.md (override bundled)
   const globalSkills = await loadSkillsFromDir(options.globalSkillsDir, "global");
-  skills.push(...globalSkills);
+  for (const s of globalSkills) skillMap.set(s.name, s);
 
-  // Project skills: {cwd}/.gg/skills/*.md
+  // 3. Project skills: {cwd}/.gg/skills/*.md (override global)
   if (options.projectDir) {
     const projectSkillsDir = path.join(options.projectDir, ".gg", "skills");
     const projectSkills = await loadSkillsFromDir(projectSkillsDir, "project");
-    skills.push(...projectSkills);
+    for (const s of projectSkills) skillMap.set(s.name, s);
   }
 
-  return skills;
+  return Array.from(skillMap.values());
 }
 
 async function loadSkillsFromDir(dir: string, source: string): Promise<Skill[]> {

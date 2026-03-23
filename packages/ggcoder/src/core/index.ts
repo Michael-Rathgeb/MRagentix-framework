@@ -24,7 +24,8 @@ export {
   type SlashCommand,
   type SlashCommandContext,
 } from "./slash-commands.js";
-export { discoverSkills, parseSkillFile, formatSkillsForPrompt, type Skill } from "./skills.js";
+export { discoverSkills, seedDefaultSkills, parseSkillFile, formatSkillsForPrompt, type Skill } from "./skills.js";
+export { discoverAgents, seedDefaultAgents, parseAgentFile, type AgentDefinition } from "./agents.js";
 export { ExtensionLoader } from "./extensions/loader.js";
 export type { Extension, ExtensionContext, ExtensionFactory } from "./extensions/types.js";
 export { shouldCompact, compact, type CompactionResult } from "./compaction/compactor.js";
