@@ -11,6 +11,7 @@ interface FooterProps {
   gitBranch?: string | null;
   thinkingEnabled?: boolean;
   planMode?: boolean;
+  reviewMode?: "off" | "standard" | "adversarial";
 }
 
 // Model ID → short display name
@@ -70,6 +71,7 @@ export function Footer({
   gitBranch,
   thinkingEnabled,
   planMode,
+  reviewMode = "off",
 }: FooterProps) {
   const theme = useTheme();
   const { columns } = useTerminalSize();
@@ -118,6 +120,11 @@ export function Footer({
 
   // "Thinking on" / "Thinking off" + key hint (⇧⇹)
   const thinkingText = thinkingEnabled ? "Thinking on" : "Thinking off";
+
+  // Review mode badge + key hint (^R)
+  const reviewLabels: Record<string, string> = { off: "Review off", standard: "Review", adversarial: "Review ⚔" };
+  const reviewText = reviewLabels[reviewMode] ?? "Review off";
+  const reviewActive = reviewMode !== "off";
 
   // Calculate whether everything fits on one line.
   // Left: path + separator + branch.  Right: tokens + bar + model + plan + thinking.
@@ -178,6 +185,9 @@ export function Footer({
           {sep}
           <Text color={thinkingEnabled ? theme.accent : theme.textDim}>{thinkingText}</Text>
           <Text color={theme.border}>{" \u21E7\u21B9"}</Text>
+          {sep}
+          <Text color={reviewActive ? (reviewMode === "adversarial" ? theme.error : theme.success) : theme.textDim}>{reviewText}</Text>
+          <Text color={theme.border}>{" ^R"}</Text>
         </Box>
       </Box>
     );
@@ -215,6 +225,9 @@ export function Footer({
         {sep}
         <Text color={thinkingEnabled ? theme.accent : theme.textDim}>{thinkingText}</Text>
         <Text color={theme.border}>{" \u21E7\u21B9"}</Text>
+        {sep}
+        <Text color={reviewActive ? (reviewMode === "adversarial" ? theme.error : theme.success) : theme.textDim}>{reviewText}</Text>
+        <Text color={theme.border}>{" ^R"}</Text>
       </Box>
     </Box>
   );

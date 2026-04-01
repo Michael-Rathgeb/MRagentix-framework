@@ -12,6 +12,7 @@ export async function buildSystemPrompt(
   skills?: Skill[],
   planMode?: boolean,
   approvedPlanPath?: string,
+  options?: { codeReview?: boolean },
 ): Promise<string> {
   const sections: string[] = [];
 
@@ -172,7 +173,16 @@ export async function buildSystemPrompt(
     }
   }
 
-  // 9. Environment (static — cacheable)
+  // 9. Code Review (when enabled)
+  if (options?.codeReview) {
+    sections.push(
+      `## Code Review\n\n` +
+        `After you complete code changes, a secondary model will review your work for bugs, security issues, and edge cases. ` +
+        `You'll receive the review findings and should address any valid concerns. Not all findings will be correct — use your judgment.`,
+    );
+  }
+
+  // 10. Environment (static — cacheable)
   sections.push(
     `## Environment\n\n` + `- Working directory: ${cwd}\n` + `- Platform: ${process.platform}`,
   );

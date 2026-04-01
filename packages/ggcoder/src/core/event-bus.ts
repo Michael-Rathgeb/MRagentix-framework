@@ -38,6 +38,10 @@ export interface BusEventMap {
   // Branch events
   branch_created: { leafId: string; messagesKept: number };
 
+  // Code review events
+  review_start: { changeCount: number };
+  review_end: { findingCount: number; summary: string; reviewModel: string; verdict: string };
+
   // Input events
   user_input: { content: string };
   slash_command: { name: string; args: string };

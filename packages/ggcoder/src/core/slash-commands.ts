@@ -190,6 +190,39 @@ export function createBuiltinCommands(): SlashCommand[] {
       },
     },
     {
+      name: "review",
+      aliases: ["rv"],
+      description: "Cycle or set review mode (off → standard → adversarial)",
+      usage: "/review [off|standard|adversarial]",
+      async execute(args, ctx) {
+        const settings = ctx.getSettings();
+        const arg = args.trim().toLowerCase();
+        if (arg === "off") {
+          await ctx.setSetting("reviewMode", "off");
+          return "Review off";
+        } else if (arg === "standard" || arg === "on") {
+          await ctx.setSetting("reviewMode", "standard");
+          return "Review standard — changes will be reviewed for bugs, security, and edge cases.";
+        } else if (arg === "adversarial") {
+          await ctx.setSetting("reviewMode", "adversarial");
+          return "Review adversarial — changes will be aggressively challenged by a secondary model.";
+        } else if (!arg) {
+          // Cycle: off → standard → adversarial → off
+          const current = (settings as Record<string, unknown>).reviewMode ?? "off";
+          const next = current === "off" ? "standard" : current === "standard" ? "adversarial" : "off";
+          await ctx.setSetting("reviewMode", next);
+          const labels: Record<string, string> = {
+            off: "Review off",
+            standard: "Review standard",
+            adversarial: "Review adversarial",
+          };
+          return labels[next] ?? "Review off";
+        } else {
+          return `Unknown review mode: "${arg}". Use /review off, /review standard, or /review adversarial.`;
+        }
+      },
+    },
+    {
       name: "help",
       aliases: ["h", "?"],
       description: "Show available commands",

@@ -16,6 +16,9 @@ const SettingsSchema = z.object({
   showTokenUsage: z.boolean().default(true),
   showThinking: z.boolean().default(true),
   enabledTools: z.array(z.string()).optional(),
+  reviewMode: z.enum(["off", "standard", "adversarial"]).default("off"),
+  reviewProvider: z.enum(["anthropic", "openai", "glm", "moonshot"]).optional(),
+  reviewModel: z.string().optional(),
 });
 
 export type Settings = z.infer<typeof SettingsSchema>;
@@ -29,6 +32,7 @@ export const DEFAULT_SETTINGS: Settings = {
   theme: "auto",
   showTokenUsage: true,
   showThinking: true,
+  reviewMode: "off",
 };
 
 // ── Settings Manager ───────────────────────────────────────

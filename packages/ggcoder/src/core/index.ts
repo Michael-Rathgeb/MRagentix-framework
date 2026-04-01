@@ -5,8 +5,10 @@ export {
   getModelsForProvider,
   getDefaultModel,
   getContextWindow,
+  getReviewModel,
   type ModelInfo,
 } from "./model-registry.js";
+export { reviewCode, collectGitDiff, collectBranchDiff, type ReviewFinding, type ReviewResult, type ReviewMode } from "./code-reviewer.js";
 export { AuthStorage, NotLoggedInError } from "./auth-storage.js";
 export { SettingsManager, DEFAULT_SETTINGS, type Settings } from "./settings-manager.js";
 export {

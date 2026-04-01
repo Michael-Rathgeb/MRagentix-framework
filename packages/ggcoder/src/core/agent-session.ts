@@ -14,7 +14,8 @@ import { SessionManager, type MessageEntry, type BranchInfo } from "./session-ma
 import { ExtensionLoader } from "./extensions/loader.js";
 import type { ExtensionContext } from "./extensions/types.js";
 import { shouldCompact, compact } from "./compaction/compactor.js";
-import { getContextWindow, MODELS } from "./model-registry.js";
+import { getContextWindow, getReviewModel, MODELS } from "./model-registry.js";
+import { reviewCode, collectGitDiff, type ReviewResult, type ReviewMode } from "./code-reviewer.js";
 import { discoverSkills, type Skill } from "./skills.js";
 import { ensureAppDirs } from "../config.js";
 import { buildSystemPrompt } from "../system-prompt.js";
@@ -281,7 +282,7 @@ export class AgentSession {
     await this.runLoop();
   }
 
-  /** Auto-compact if needed, run agent loop with auth retry, and persist messages. */
+  /** Auto-compact if needed, run agent loop with auth retry, trigger code review, and persist messages. */
   private async runLoop(): Promise<void> {
     // Auto-compact if needed
     if (this.settingsManager.get("autoCompact")) {
@@ -292,9 +293,23 @@ export class AgentSession {
       }
     }
 
-    // Resolve OAuth credentials and run agent loop.
-    // On 401, force-refresh the token and retry once — the provider may have
-    // revoked the token server-side before the stored expiry (e.g. after a restart).
+    // Track whether code-modifying tools were used during this loop
+    const madeCodeChanges = await this.runLoopInternal();
+
+    // Code review phase — use git diff for the actual review content
+    const reviewMode = this.settingsManager.get("reviewMode");
+    if (reviewMode !== "off" && madeCodeChanges) {
+      await this.runCodeReview(reviewMode);
+    }
+  }
+
+  /**
+   * Run the agent loop with auth retry. Returns true if write/edit tools were
+   * used (indicating code was changed and review may be warranted).
+   */
+  private async runLoopInternal(): Promise<boolean> {
+    let madeCodeChanges = false;
+
     let creds = await this.authStorage.resolveCredentials(this.provider);
 
     const runAgentLoop = async (apiKey: string, accountId?: string) => {
@@ -314,15 +329,21 @@ export class AgentSession {
 
       for await (const event of generator as AsyncIterable<AgentEvent>) {
         this.eventBus.forwardAgentEvent(event);
+
+        // Detect if code-modifying tools were used
+        if (event.type === "tool_call_start") {
+          if (event.name === "write" || event.name === "edit") {
+            madeCodeChanges = true;
+          }
+        }
       }
     };
 
     try {
       await runAgentLoop(creds.accessToken, creds.accountId);
     } catch (err) {
-      // Abort errors are expected (user cancellation) — don't retry or re-throw
       if (isAbortError(err) || this.opts.signal?.aborted) {
-        return;
+        return madeCodeChanges;
       }
       if (err instanceof ProviderError && err.statusCode === 401) {
         log("INFO", "auth", "Got 401, force-refreshing token and retrying");
@@ -338,6 +359,135 @@ export class AgentSession {
       await this.persistMessage(this.messages[i]);
     }
     this.lastPersistedIndex = this.messages.length;
+
+    return madeCodeChanges;
+  }
+
+  /**
+   * Run the code review phase using git diff: collect the real diff from the
+   * working tree, send it to the review model, inject findings, and run
+   * the primary model once more to address them.
+   */
+  private async runCodeReview(mode?: ReviewMode): Promise<void> {
+    // Collect the actual diff from git — more reliable than tracking tool calls
+    const diff = await collectGitDiff(this.cwd);
+    if (!diff) {
+      log("INFO", "review", "No git diff found — skipping review");
+      return;
+    }
+
+    const reviewModelInfo = this.getReviewModelInfo();
+    const reviewMode: ReviewMode = mode ?? "standard";
+
+    // Check if the review provider has valid credentials
+    let reviewCreds: { accessToken: string; accountId?: string };
+    try {
+      reviewCreds = await this.authStorage.resolveCredentials(reviewModelInfo.provider);
+    } catch {
+      log("WARN", "review", `Review provider "${reviewModelInfo.provider}" not authenticated — skipping review`);
+      return;
+    }
+
+    // Count files changed from the diff headers
+    const fileCount = (diff.match(/^diff --git/gm) ?? []).length || 1;
+    this.eventBus.emit("review_start", { changeCount: fileCount });
+
+    const result = await reviewCode({
+      diff,
+      provider: reviewModelInfo.provider,
+      model: reviewModelInfo.modelId,
+      apiKey: reviewCreds.accessToken,
+      mode: reviewMode,
+      signal: this.opts.signal,
+    });
+
+    if (result && result.findings.length > 0) {
+      this.eventBus.emit("review_end", {
+        findingCount: result.findings.length,
+        summary: result.summary,
+        reviewModel: result.reviewModel,
+        verdict: result.verdict,
+      });
+
+      // Inject findings as a user message and run the primary model again
+      const reviewMessage = this.formatReviewFindings(result);
+      const userMsg: Message = { role: "user", content: reviewMessage };
+      this.messages.push(userMsg);
+      await this.persistMessage(userMsg);
+      this.lastPersistedIndex = this.messages.length;
+
+      // Run the primary model again to address findings (no further review)
+      await this.runLoopInternal();
+    } else {
+      this.eventBus.emit("review_end", {
+        findingCount: 0,
+        summary: result?.summary ?? "No issues found",
+        reviewModel: reviewModelInfo.modelId,
+        verdict: result?.verdict ?? "approve",
+      });
+    }
+  }
+
+  /**
+   * Determine which model/provider to use for code review.
+   */
+  private getReviewModelInfo(): { provider: Provider; modelId: string } {
+    const settingsProvider = this.settingsManager.get("reviewProvider");
+    const settingsModel = this.settingsManager.get("reviewModel");
+
+    if (settingsProvider && settingsModel) {
+      return { provider: settingsProvider, modelId: settingsModel };
+    }
+
+    // Auto-pick: use a different provider than the primary
+    const auto = getReviewModel(this.provider, this.model);
+    return {
+      provider: settingsProvider ?? auto.provider,
+      modelId: settingsModel ?? auto.model.id,
+    };
+  }
+
+  /**
+   * Format review findings into a rich message for the primary model.
+   */
+  private formatReviewFindings(result: ReviewResult): string {
+    const modeLabel = result.mode === "adversarial" ? "Adversarial Code Review" : "Code Review";
+    const lines = [
+      `## ${modeLabel} Findings — ${result.verdict === "needs-attention" ? "NEEDS ATTENTION" : "APPROVED"}`,
+      ``,
+      `A secondary model (${result.reviewModel}) reviewed your recent code changes and found ${result.findings.length} issue(s):`,
+      ``,
+      `**Summary:** ${result.summary}`,
+      ``,
+    ];
+
+    for (const finding of result.findings) {
+      const loc = finding.lineStart
+        ? `:${finding.lineStart}${finding.lineEnd && finding.lineEnd !== finding.lineStart ? `-${finding.lineEnd}` : ""}`
+        : "";
+      const conf = Math.round(finding.confidence * 100);
+      lines.push(`### [${finding.severity.toUpperCase()}] ${finding.title} (${conf}% confidence)`);
+      lines.push(`**File:** \`${finding.file}${loc}\``);
+      lines.push(``);
+      lines.push(finding.body);
+      if (finding.recommendation) {
+        lines.push(``);
+        lines.push(`**Recommendation:** ${finding.recommendation}`);
+      }
+      lines.push(``);
+    }
+
+    if (result.nextSteps.length > 0) {
+      lines.push(`### Next Steps`);
+      for (const step of result.nextSteps) {
+        lines.push(`- ${step}`);
+      }
+      lines.push(``);
+    }
+
+    lines.push(`Please review these findings and address any valid concerns. Not all findings may be correct — use your judgment. Focus on high-confidence, high-severity issues first.`);
+
+    return lines.join("\n");
   }
 
   async switchModel(provider: string, model: string): Promise<void> {

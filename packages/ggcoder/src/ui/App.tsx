@@ -35,7 +35,8 @@ import { useTheme } from "./theme/theme.js";
 import { useAnimationTick, deriveFrame } from "./components/AnimationContext.js";
 import { useTerminalTitle } from "./hooks/useTerminalTitle.js";
 import { getGitBranch } from "../utils/git.js";
-import { getModel, getContextWindow } from "../core/model-registry.js";
+import { getModel, getContextWindow, getReviewModel } from "../core/model-registry.js";
+import { reviewCode, collectGitDiff, type ReviewMode } from "../core/code-reviewer.js";
 import { SessionManager, type MessageEntry } from "../core/session-manager.js";
 import { log } from "../core/logger.js";
 import { SettingsManager } from "../core/settings-manager.js";
@@ -216,6 +217,21 @@ interface PlanTransitionItem {
   id: string;
 }
 
+interface ReviewingItem {
+  kind: "reviewing";
+  changeCount: number;
+  id: string;
+}
+
+interface ReviewDoneItem {
+  kind: "review_done";
+  findingCount: number;
+  summary: string;
+  reviewModel: string;
+  verdict: string;
+  id: string;
+}
+
 interface TombstoneItem {
   kind: "tombstone";
   id: string;
@@ -257,6 +273,8 @@ export type CompletedItem =
   | SubAgentGroupItem
   | ToolGroupItem
   | PlanTransitionItem
+  | ReviewingItem
+  | ReviewDoneItem
   | TombstoneItem;
 
 /**
@@ -483,6 +501,8 @@ export function App(props: AppProps) {
   const [runAllTasks, setRunAllTasks] = useState(false);
   const runAllTasksRef = useRef(false);
   const startTaskRef = useRef<(title: string, prompt: string, taskId: string) => void>(() => {});
+  // Ref for triggering code review from stale onDone closure
+  const runCodeReviewRef = useRef<(toolsUsed: string[]) => Promise<void>>(async () => {});
   const cwdRef = useRef(props.cwd);
   const [staticKey, setStaticKey] = useState(0);
   const [doneStatus, setDoneStatus] = useState<{
@@ -1104,6 +1124,12 @@ export function App(props: AppProps) {
           return [];
         });
 
+        // Code review: trigger secondary model review if write/edit tools were used
+        // Uses a ref to access the latest closure (reviewMode, provider, etc.)
+        if (reviewModeRef.current !== "off") {
+          void runCodeReviewRef.current(toolsUsed);
+        }
+
         // Run-all: auto-start next pending task after a short delay
         // (allow the two-phase flush to complete first)
         if (runAllTasksRef.current) {
@@ -1506,6 +1532,43 @@ export function App(props: AppProps) {
     });
   }, [props.settingsFile]);
 
+  // Review mode: off → standard → adversarial → off
+  const [reviewMode, setReviewMode] = useState<"off" | "standard" | "adversarial">("off");
+  const reviewModeRef = useRef<"off" | "standard" | "adversarial">("off");
+
+  // Load initial review mode from settings
+  useEffect(() => {
+    if (settingsRef.current) {
+      const mode = settingsRef.current.get("reviewMode");
+      if (mode) {
+        setReviewMode(mode);
+        reviewModeRef.current = mode;
+      }
+    }
+  }, []);
+
+  const handleToggleReview = useCallback(() => {
+    setReviewMode((prev) => {
+      const next = prev === "off" ? "standard" : prev === "standard" ? "adversarial" : "off";
+      reviewModeRef.current = next;
+      const labels: Record<string, string> = {
+        off: "Review off",
+        standard: "Review standard",
+        adversarial: "Review adversarial",
+      };
+      log("INFO", "review", `Review mode: ${next}`);
+      setLiveItems((items) => [
+        ...items,
+        { kind: "info", text: labels[next], id: getId() },
+      ]);
+      if (props.settingsFile) {
+        const sm = new SettingsManager(props.settingsFile);
+        sm.load().then(() => sm.set("reviewMode", next));
+      }
+      return next;
+    });
+  }, [props.settingsFile]);
+
   const handleModelSelect = useCallback(
     (value: string) => {
       setOverlay(null);
@@ -1753,6 +1816,29 @@ export function App(props: AppProps) {
         );
       case "subagent_group":
         return <SubAgentPanel key={item.id} agents={item.agents} aborted={item.aborted} />;
+      case "reviewing":
+        return (
+          <Box key={item.id} marginTop={1}>
+            <Text color={theme.accent}>
+              {"🔍 Reviewing changes with secondary model ("}
+              {item.changeCount}
+              {" file"}
+              {item.changeCount !== 1 ? "s" : ""}
+              {" changed)..."}
+            </Text>
+          </Box>
+        );
+      case "review_done":
+        return (
+          <Box key={item.id} marginTop={1}>
+            <Text color={item.findingCount > 0 ? theme.warning ?? theme.accent : theme.success}>
+              {item.findingCount > 0
+                ? `⚠ Review complete: ${item.findingCount} issue${item.findingCount !== 1 ? "s" : ""} found — feeding back to primary model`
+                : "✅ Review complete: No issues found"}
+            </Text>
+            <Text color={theme.textDim}>{` (${item.reviewModel})`}</Text>
+          </Box>
+        );
     }
   };
 
@@ -1807,6 +1893,133 @@ export function App(props: AppProps) {
     },
     [props.cwd, stdout, agentLoop, currentProvider, currentModel],
   );
+
+  // ── Code review runner ──────────────────────────────────
+  // Collects git diff, sends to a secondary model, shows results in the UI,
+  // and feeds findings back to the primary agent if issues are found.
+  runCodeReviewRef.current = async (toolsUsed: string[]) => {
+    const mode = reviewModeRef.current;
+    if (mode === "off") return;
+    const madeCodeChanges = toolsUsed.includes("write") || toolsUsed.includes("edit");
+    if (!madeCodeChanges) return;
+
+    const cwd = cwdRef.current;
+    const diff = await collectGitDiff(cwd);
+    if (!diff) {
+      log("INFO", "review", "No git diff found — skipping review");
+      return;
+    }
+
+    const fileCount = (diff.match(/^diff --git/gm) ?? []).length || 1;
+    const reviewModelInfo = getReviewModel(currentProvider, currentModel);
+
+    // Resolve credentials for the review provider
+    let reviewApiKey: string;
+    try {
+      if (props.authStorage) {
+        const creds = await props.authStorage.resolveCredentials(reviewModelInfo.provider);
+        reviewApiKey = creds.accessToken;
+      } else {
+        const creds = props.credentialsByProvider?.[reviewModelInfo.provider];
+        if (!creds) {
+          log("WARN", "review", `Review provider "${reviewModelInfo.provider}" not authenticated — skipping`);
+          return;
+        }
+        reviewApiKey = creds.accessToken;
+      }
+    } catch {
+      log("WARN", "review", `Review provider "${reviewModelInfo.provider}" not authenticated — skipping`);
+      return;
+    }
+
+    // Show "reviewing" spinner
+    setLiveItems((prev) => [
+      ...prev,
+      { kind: "reviewing", changeCount: fileCount, id: getId() },
+    ]);
+
+    const result = await reviewCode({
+      diff,
+      provider: reviewModelInfo.provider,
+      model: reviewModelInfo.model.id,
+      apiKey: reviewApiKey,
+      mode: mode as ReviewMode,
+    });
+
+    if (result && result.findings.length > 0) {
+      // Show review_done with findings
+      setLiveItems((prev) => [
+        ...prev,
+        {
+          kind: "review_done",
+          findingCount: result.findings.length,
+          summary: result.summary,
+          reviewModel: result.reviewModel,
+          verdict: result.verdict,
+          id: getId(),
+        },
+      ]);
+
+      // Format findings into a message and feed back to the primary model
+      const modeLabel = result.mode === "adversarial" ? "Adversarial Code Review" : "Code Review";
+      const lines = [
+        `## ${modeLabel} Findings — ${result.verdict === "needs-attention" ? "NEEDS ATTENTION" : "APPROVED"}`,
+        ``,
+        `A secondary model (${result.reviewModel}) reviewed your recent code changes and found ${result.findings.length} issue(s):`,
+        ``,
+        `**Summary:** ${result.summary}`,
+        ``,
+      ];
+      for (const finding of result.findings) {
+        const loc = finding.lineStart
+          ? `:${finding.lineStart}${finding.lineEnd && finding.lineEnd !== finding.lineStart ? `-${finding.lineEnd}` : ""}`
+          : "";
+        const conf = Math.round(finding.confidence * 100);
+        lines.push(`### [${finding.severity.toUpperCase()}] ${finding.title} (${conf}% confidence)`);
+        lines.push(`**File:** \`${finding.file}${loc}\``);
+        lines.push(``);
+        lines.push(finding.body);
+        if (finding.recommendation) {
+          lines.push(``);
+          lines.push(`**Recommendation:** ${finding.recommendation}`);
+        }
+        lines.push(``);
+      }
+      if (result.nextSteps.length > 0) {
+        lines.push(`### Next Steps`);
+        for (const step of result.nextSteps) {
+          lines.push(`- ${step}`);
+        }
+        lines.push(``);
+      }
+      lines.push(`Please review these findings and address any valid concerns. Not all findings may be correct — use your judgment. Focus on high-confidence, high-severity issues first.`);
+
+      const reviewMessage = lines.join("\n");
+
+      // Let React process the review_done state before starting next run
+      await new Promise((r) => setTimeout(r, 200));
+
+      try {
+        await agentLoop.run(reviewMessage);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log("ERROR", "review", `Review follow-up failed: ${msg}`);
+      }
+    } else {
+      // No findings — just show clean review result
+      setLiveItems((prev) => [
+        ...prev,
+        {
+          kind: "review_done",
+          findingCount: 0,
+          summary: result?.summary ?? "No issues found",
+          reviewModel: reviewModelInfo.model.id,
+          verdict: result?.verdict ?? "approve",
+          id: getId(),
+        },
+      ]);
+    }
+  };
 
   // Keep refs in sync for access from stale closures (onDone)
   startTaskRef.current = startTask;
@@ -2013,6 +2226,7 @@ export function App(props: AppProps) {
               stdout?.write("\x1b[2J\x1b[3J\x1b[H");
               setOverlay("skills");
             }}
+            onToggleReview={handleToggleReview}
             onTogglePlanMode={() => {
               const next = !planMode;
               setPlanMode(next);
@@ -2046,6 +2260,7 @@ export function App(props: AppProps) {
               gitBranch={gitBranch}
               thinkingEnabled={thinkingEnabled}
               planMode={planMode}
+              reviewMode={reviewMode}
             />
           )}
           {bgTasks.length > 0 && (

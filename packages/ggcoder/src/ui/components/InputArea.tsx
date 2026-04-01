@@ -77,6 +77,7 @@ interface InputAreaProps {
   onToggleTasks?: () => void;
   onToggleSkills?: () => void;
   onTogglePlanMode?: () => void;
+  onToggleReview?: () => void;
   cwd: string;
   commands?: SlashCommandInfo[];
 }
@@ -139,6 +140,7 @@ export function InputArea({
   onToggleTasks,
   onToggleSkills,
   onTogglePlanMode,
+  onToggleReview,
   cwd,
   commands = [],
 }: InputAreaProps) {
@@ -278,6 +280,12 @@ export function InputArea({
       // Ctrl+P toggles plan mode
       if (key.ctrl && input === "p") {
         onTogglePlanMode?.();
+        return;
+      }
+
+      // Ctrl+R cycles review mode (off → standard → adversarial)
+      if (key.ctrl && input === "r") {
+        onToggleReview?.();
         return;
       }
 

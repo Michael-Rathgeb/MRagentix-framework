@@ -135,6 +135,20 @@ export function getContextWindow(modelId: string): number {
  * - GLM: GLM-4.7 Flash (cheap alternative)
  * - Moonshot: use the current model (no cheap alternative)
  */
+/**
+ * Get the best review model — picks a model from a different provider
+ * than the primary model to get a genuinely different perspective.
+ */
+export function getReviewModel(
+  primaryProvider: Provider,
+  _primaryModelId: string,
+): { provider: Provider; model: ModelInfo } {
+  if (primaryProvider === "anthropic") {
+    return { provider: "openai", model: MODELS.find((m) => m.id === "gpt-5.3-codex")! };
+  }
+  return { provider: "anthropic", model: MODELS.find((m) => m.id === "claude-sonnet-4-6")! };
+}
+
 export function getSummaryModel(provider: Provider, currentModelId: string): ModelInfo {
   if (provider === "anthropic") {
     return MODELS.find((m) => m.id === "claude-sonnet-4-6")!;
